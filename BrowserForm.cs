@@ -6,6 +6,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
@@ -64,6 +65,7 @@ namespace ChenmuBrowser
         private readonly ToolTip _toolTip = new ToolTip();
         private readonly string _dataRoot;
         private readonly HashSet<string> _blockedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _allowedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private Panel _homeView;
         private Panel _errorView;
@@ -78,6 +80,10 @@ namespace ChenmuBrowser
         private Task<CoreWebView2Environment> _webViewEnvironmentTask;
         private readonly List<DownloadEntry> _downloads = new List<DownloadEntry>();
         private bool _blockTrackers = true;
+        private bool _restorePreviousSession;
+        private bool _isRestoringSession;
+        private readonly List<string> _startupSessionUrls = new List<string>();
+        private int _startupSessionActiveIndex;
         private bool _dataSaver;
         private string _searchEngine = "google";
         private DateTime _lastUpdateCheckUtc = DateTime.MinValue;
@@ -85,6 +91,7 @@ namespace ChenmuBrowser
 
         private string SettingsPath { get { return Path.Combine(_dataRoot, "settings.ini"); } }
         private string BookmarksPath { get { return Path.Combine(_dataRoot, "bookmarks.tsv"); } }
+        private string SessionPath { get { return Path.Combine(_dataRoot, "session.tsv"); } }
 
         public BrowserForm(string dataRoot = null, bool isIsolatedTest = false, int initialTestTabs = 1)
         {
@@ -110,6 +117,7 @@ namespace ChenmuBrowser
 
             LoadPreferences();
             LoadBlocklist();
+            LoadSessionSnapshot();
             HandleCreated += delegate { ApplyWindowCaptionColors(); };
             Activated += delegate { ApplyWindowCaptionColors(); };
             BuildInterface();
@@ -123,6 +131,8 @@ namespace ChenmuBrowser
                 ApplyWindowCaptionColors();
                 UpdateTabSidebar();
                 EnsureTabVisible(_activeTab);
+                if (!_isIsolatedTest)
+                    await RestoreSessionAsync();
                 ShowPendingUpdateNotice();
 #if DEBUG
                 UpdateVisualTestStatus();
@@ -135,6 +145,7 @@ namespace ChenmuBrowser
                 _homeGreetingTimer.Stop();
                 _homeGreetingTimer.Dispose();
             };
+            FormClosing += delegate { SaveSessionSnapshot(); };
         }
 
 #if DEBUG
@@ -699,6 +710,7 @@ namespace ChenmuBrowser
             _tabs.RemoveAt(index);
             _tabHeaders.Controls.Remove(tab.Header);
             UpdateTabSidebar();
+            SaveSessionSnapshot();
             if (tab.Header != null)
                 tab.Header.Dispose();
             if (tab.WebView != null)
@@ -756,6 +768,7 @@ namespace ChenmuBrowser
             }
             UpdateTabHeaders();
             EnsureTabVisible(tab);
+            SaveSessionSnapshot();
         }
 
         private void UpdateTabSidebar()
@@ -1647,7 +1660,15 @@ namespace ChenmuBrowser
                 if (IsActiveCore(core))
                     _statusLabel.Text = e.IsSuccess ? "完成" : "页面加载失败；可检查网址或网络连接。";
                 if (e.IsSuccess)
+                {
                     RecordHistory(core);
+                    var ownerTab = FindTabForCore(core);
+                    if (ownerTab != null)
+                    {
+                        ownerTab.SessionUrl = GetSessionUrl(core.Source);
+                        SaveSessionSnapshot();
+                    }
+                }
                 UpdateWindowTitle(core);
             };
             core.DocumentTitleChanged += delegate { UpdateWindowTitle(core); };
@@ -1667,6 +1688,12 @@ namespace ChenmuBrowser
         {
             return core != null && _activeTab != null && _activeTab.WebView != null &&
                 _activeTab.WebView.CoreWebView2 == core;
+        }
+
+        private BrowserTab FindTabForCore(CoreWebView2 core)
+        {
+            return core == null ? null : _tabs.FirstOrDefault(tab =>
+                tab.WebView != null && tab.WebView.CoreWebView2 == core);
         }
 
         private async void OpenNewTabFromPage(string url)
@@ -1766,6 +1793,12 @@ namespace ChenmuBrowser
             {
                 e.Cancel = true;
                 var secureUrl = "https:" + e.Uri.Substring("http:".Length);
+                var ownerTab = FindTabForCore(core);
+                if (ownerTab != null)
+                {
+                    ownerTab.SessionUrl = GetSessionUrl(secureUrl);
+                    SaveSessionSnapshot();
+                }
                 if (IsActiveCore(core))
                     _addressBox.Text = secureUrl;
                 if (core != null)
@@ -1774,7 +1807,18 @@ namespace ChenmuBrowser
             }
 
             if (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == "about")
+            {
+                if (uri.Scheme == Uri.UriSchemeHttps)
+                {
+                    var ownerTab = FindTabForCore(core);
+                    if (ownerTab != null)
+                    {
+                        ownerTab.SessionUrl = GetSessionUrl(e.Uri);
+                        SaveSessionSnapshot();
+                    }
+                }
                 return;
+            }
 
             e.Cancel = true;
             try
@@ -1795,7 +1839,7 @@ namespace ChenmuBrowser
             {
                 Uri uri;
                 if (Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out uri))
-                    shouldBlock = IsBlockedHost(uri.Host);
+                    shouldBlock = DomainRuleMatcher.ShouldBlock(uri.Host, _blockedHosts, _allowedHosts);
             }
 
             if (shouldBlock)
@@ -1806,16 +1850,18 @@ namespace ChenmuBrowser
             }
         }
 
-        private bool IsBlockedHost(string host)
+        private static string NormalizeHost(string host)
         {
-            var normalized = (host ?? String.Empty).TrimEnd('.');
-            foreach (var blocked in _blockedHosts)
-            {
-                if (String.Equals(normalized, blocked, StringComparison.OrdinalIgnoreCase) ||
-                    normalized.EndsWith("." + blocked, StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-            return false;
+            return DomainRuleMatcher.NormalizeHost(host);
+        }
+
+        private static string GetSessionUrl(string value)
+        {
+            Uri uri;
+            if (!Uri.TryCreate(value, UriKind.Absolute, out uri) || String.IsNullOrWhiteSpace(uri.Host) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                return null;
+            return uri.AbsoluteUri;
         }
 
         private void NavigateFromPage(string url)
@@ -1834,6 +1880,7 @@ namespace ChenmuBrowser
                 CreateNewTab();
             _activeTab.IsHome = true;
             _activeTab.Title = "新标签页";
+            _activeTab.SessionUrl = null;
             SwitchToTab(_activeTab);
         }
 
@@ -1974,6 +2021,7 @@ namespace ChenmuBrowser
                 dialog.Close();
             };
             dialog.Shown += delegate { titleBox.Focus(); };
+            ApplyDialogStyle(dialog);
             dialog.ShowDialog(this);
         }
 
@@ -1994,7 +2042,7 @@ namespace ChenmuBrowser
             var items = ReadBookmarks();
             foreach (var item in items)
                 list.Items.Add(item);
-            list.DisplayMember = "Title";
+            list.DisplayMember = "DisplayTitle";
 
             var buttons = new FlowLayoutPanel
             {
@@ -2006,15 +2054,22 @@ namespace ChenmuBrowser
             var closeButton = new Button { Text = "关闭", Width = 85, DialogResult = DialogResult.Cancel };
             var deleteButton = new Button { Text = "删除", Width = 85 };
             var openButton = new Button { Text = "打开", Width = 85 };
+            var exportButton = new Button { Text = "导出 HTML", Width = 90 };
+            var importButton = new Button { Text = "导入 HTML", Width = 90 };
             buttons.Controls.Add(closeButton);
             buttons.Controls.Add(deleteButton);
             buttons.Controls.Add(openButton);
+            buttons.Controls.Add(exportButton);
+            buttons.Controls.Add(importButton);
             dialog.Controls.Add(list);
             dialog.Controls.Add(buttons);
             dialog.CancelButton = closeButton;
+            dialog.AcceptButton = openButton;
 
             openButton.Click += async delegate { await NavigateSelectedBookmarkAsync(list, dialog); };
             list.DoubleClick += async delegate { await NavigateSelectedBookmarkAsync(list, dialog); };
+            importButton.Click += delegate { ImportBookmarksFromHtml(list, items, dialog); };
+            exportButton.Click += delegate { ExportBookmarksToHtml(items, dialog); };
             deleteButton.Click += delegate
             {
                 var selected = list.SelectedItem as BookmarkItem;
@@ -2028,7 +2083,107 @@ namespace ChenmuBrowser
                 if (list.Items.Count > 0)
                     list.SelectedIndex = Math.Min(current, list.Items.Count - 1);
             };
+            ApplyDialogStyle(dialog);
             dialog.ShowDialog(this);
+        }
+
+        private void ImportBookmarksFromHtml(ListBox list, List<BookmarkItem> items, Form owner)
+        {
+            using (var picker = new OpenFileDialog
+            {
+                Title = "导入浏览器书签",
+                Filter = "书签 HTML 文件 (*.html;*.htm)|*.html;*.htm|所有文件 (*.*)|*.*",
+                CheckFileExists = true,
+                Multiselect = false
+            })
+            {
+                if (picker.ShowDialog(owner) != DialogResult.OK)
+                    return;
+                try
+                {
+                    var parsed = BookmarkHtmlTransfer.Parse(File.ReadAllText(picker.FileName, Encoding.UTF8));
+                    if (parsed.Count == 0)
+                    {
+                        MessageBox.Show(owner, "文件中没有找到有效的 HTTP 或 HTTPS 书签。", "导入书签",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    var merged = items.ToList();
+                    var knownUrls = new HashSet<string>(merged.Select(item => item.Url), StringComparer.OrdinalIgnoreCase);
+                    var added = 0;
+                    var duplicates = 0;
+                    foreach (var item in parsed)
+                    {
+                        if (!knownUrls.Add(item.Url))
+                        {
+                            duplicates++;
+                            continue;
+                        }
+                        merged.Add(new BookmarkItem
+                        {
+                            Title = item.Title,
+                            Url = item.Url,
+                            FolderPath = item.FolderPath
+                        });
+                        added++;
+                    }
+                    if (!WriteBookmarks(merged))
+                        return;
+
+                    items.Clear();
+                    items.AddRange(merged);
+                    list.BeginUpdate();
+                    list.Items.Clear();
+                    foreach (var item in items)
+                        list.Items.Add(item);
+                    list.EndUpdate();
+                    _statusLabel.Text = "已导入 " + added.ToString(CultureInfo.InvariantCulture) + " 个书签。";
+                    MessageBox.Show(owner,
+                        "已添加 " + added.ToString(CultureInfo.InvariantCulture) + " 个书签；重复网址跳过 " +
+                        duplicates.ToString(CultureInfo.InvariantCulture) + " 个。导入采用合并方式，原书签不会被覆盖。",
+                        "导入书签", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(owner, "无法导入书签：\r\n" + ex.Message, "导入书签",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+        }
+
+        private void ExportBookmarksToHtml(List<BookmarkItem> items, Form owner)
+        {
+            using (var picker = new SaveFileDialog
+            {
+                Title = "导出浏览器书签",
+                Filter = "书签 HTML 文件 (*.html)|*.html|所有文件 (*.*)|*.*",
+                DefaultExt = "html",
+                AddExtension = true,
+                FileName = "bookmarks.html",
+                OverwritePrompt = true
+            })
+            {
+                if (picker.ShowDialog(owner) != DialogResult.OK)
+                    return;
+                try
+                {
+                    var transferItems = items.Select(item => new BookmarkTransferItem
+                    {
+                        Title = item.Title,
+                        Url = item.Url,
+                        FolderPath = item.FolderPath
+                    });
+                    var html = BookmarkHtmlTransfer.Export(transferItems);
+                    File.WriteAllText(picker.FileName, html, new System.Text.UTF8Encoding(false));
+                    _statusLabel.Text = "书签已导出到 HTML 文件。";
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(owner, "无法导出书签：\r\n" + ex.Message, "导出书签",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
         }
 
         private void ShowDownloadsDialog()
@@ -2129,6 +2284,7 @@ namespace ChenmuBrowser
             };
             refresh();
             timer.Start();
+            ApplyDialogStyle(dialog);
             dialog.ShowDialog(this);
         }
 
@@ -2287,13 +2443,120 @@ namespace ChenmuBrowser
 
         private void ShowAbout()
         {
-            MessageBox.Show(this,
-                "CHENMU Browser for Windows\r\n轻量桌面浏览器 · 版本 v" + UpdateService.CurrentVersion.ToString(3) +
-                "\r\n\r\n基于 Microsoft Edge WebView2 Evergreen Runtime。\r\n" +
-                "Ctrl+L 地址栏  ·  Ctrl+D 收藏  ·  Ctrl+R 刷新  ·  Esc 停止\r\n" +
-                "内置每日更新检查；更新时连接 GitHub Releases，不上传浏览记录或设备标识。\r\n" +
-                "密码自动保存与表单自动填充默认关闭。",
-                "关于 CHENMU Browser", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            var dialog = new Form
+            {
+                Text = "关于 CHENMU Browser",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowInTaskbar = false,
+                ClientSize = new Size(380, 190),
+                Font = Font
+            };
+            var name = new Label
+            {
+                Text = "CHENMU Browser",
+                Dock = DockStyle.Top,
+                Height = 66,
+                TextAlign = ContentAlignment.BottomCenter,
+                Font = new Font("Microsoft YaHei UI", 19F, FontStyle.Regular, GraphicsUnit.Point),
+                ForeColor = Color.FromArgb(39, 59, 82)
+            };
+            var version = new Label
+            {
+                Text = "版本 v" + UpdateService.CurrentVersion.ToString(3),
+                Dock = DockStyle.Top,
+                Height = 42,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Regular, GraphicsUnit.Point),
+                ForeColor = Color.FromArgb(104, 119, 137)
+            };
+            var close = new Button
+            {
+                Text = "确定",
+                Width = 96,
+                Height = 34,
+                DialogResult = DialogResult.OK,
+                Anchor = AnchorStyles.Bottom | AnchorStyles.Right
+            };
+            close.Location = new Point(dialog.ClientSize.Width - close.Width - 22,
+                dialog.ClientSize.Height - close.Height - 18);
+            dialog.Controls.Add(close);
+            dialog.Controls.Add(version);
+            dialog.Controls.Add(name);
+            dialog.AcceptButton = close;
+            ApplyDialogStyle(dialog);
+            dialog.ShowDialog(this);
+        }
+
+        private void ApplyDialogStyle(Form dialog)
+        {
+            if (dialog == null)
+                return;
+            dialog.BackColor = Color.FromArgb(249, 251, 255);
+            dialog.ForeColor = Color.FromArgb(52, 66, 82);
+            dialog.Font = Font;
+            dialog.ShowIcon = false;
+            dialog.Shown += delegate
+            {
+                StyleDialogControls(dialog, dialog.AcceptButton as Control);
+            };
+        }
+
+        private void StyleDialogControls(Control parent, Control primaryButton)
+        {
+            foreach (Control control in parent.Controls)
+            {
+                var container = control as Panel;
+                if (container != null && control.BackColor == SystemColors.Control)
+                    control.BackColor = Color.FromArgb(249, 251, 255);
+
+                var button = control as Button;
+                if (button != null)
+                {
+                    var primary = button == primaryButton || button.DialogResult == DialogResult.OK;
+                    button.FlatStyle = FlatStyle.Flat;
+                    button.FlatAppearance.BorderSize = primary ? 0 : 1;
+                    button.FlatAppearance.BorderColor = Color.FromArgb(218, 226, 236);
+                    button.FlatAppearance.MouseOverBackColor = primary
+                        ? Color.FromArgb(54, 129, 219)
+                        : Color.FromArgb(239, 244, 250);
+                    button.BackColor = primary ? Color.FromArgb(42, 118, 212) : Color.White;
+                    button.ForeColor = primary ? Color.White : Color.FromArgb(57, 72, 90);
+                    button.Cursor = Cursors.Hand;
+                }
+
+                var textBox = control as TextBox;
+                if (textBox != null)
+                {
+                    textBox.BorderStyle = BorderStyle.FixedSingle;
+                    textBox.BackColor = Color.White;
+                    textBox.ForeColor = Color.FromArgb(47, 62, 80);
+                }
+
+                var list = control as ListBox;
+                if (list != null)
+                {
+                    list.BorderStyle = BorderStyle.FixedSingle;
+                    list.BackColor = Color.White;
+                    list.ForeColor = Color.FromArgb(47, 62, 80);
+                }
+
+                var listView = control as ListView;
+                if (listView != null)
+                {
+                    listView.BorderStyle = BorderStyle.FixedSingle;
+                    listView.BackColor = Color.White;
+                    listView.ForeColor = Color.FromArgb(47, 62, 80);
+                }
+
+                var combo = control as ComboBox;
+                if (combo != null)
+                    combo.FlatStyle = FlatStyle.Popup;
+
+                StyleDialogControls(control, primaryButton);
+            }
         }
 
         private void UpdateWindowTitle(CoreWebView2 core)
@@ -2419,10 +2682,12 @@ namespace ChenmuBrowser
 
                 foreach (var line in File.ReadAllLines(path))
                 {
-                    var host = line.Trim();
-                    if (host.Length == 0 || host.StartsWith("#", StringComparison.Ordinal))
+                    var value = line.Trim();
+                    if (value.Length == 0 || value.StartsWith("#", StringComparison.Ordinal))
                         continue;
-                    _blockedHosts.Add(host.TrimStart('.').TrimEnd('.'));
+                    var host = NormalizeHost(value);
+                    if (host.Length > 0)
+                        _blockedHosts.Add(host);
                 }
             }
             catch
@@ -2463,11 +2728,27 @@ namespace ChenmuBrowser
                             _lastUpdateCheckUtc = timestamp.ToUniversalTime();
                         continue;
                     }
+                    if (parts[0] == "allowedHosts")
+                    {
+                        foreach (var item in parts[1].Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            try
+                            {
+                                var host = NormalizeHost(Uri.UnescapeDataString(item));
+                                if (host.Length > 0)
+                                    _allowedHosts.Add(host);
+                            }
+                            catch { }
+                        }
+                        continue;
+                    }
                     bool value;
                     if (!Boolean.TryParse(parts[1], out value))
                         continue;
                     if (parts[0] == "blockTrackers")
                         _blockTrackers = value;
+                    else if (parts[0] == "restorePreviousSession")
+                        _restorePreviousSession = value;
                     else if (parts[0] == "dataSaver")
                         _dataSaver = value;
                     else if (parts[0] == "pageAnimations")
@@ -2488,7 +2769,11 @@ namespace ChenmuBrowser
                 File.WriteAllLines(SettingsPath, new[]
                 {
                     "blockTrackers=" + _blockTrackers,
+                    "restorePreviousSession=" + _restorePreviousSession,
                     "dataSaver=" + _dataSaver,
+                    "allowedHosts=" + String.Join(";", _allowedHosts
+                        .OrderBy(host => host, StringComparer.OrdinalIgnoreCase)
+                        .Select(Uri.EscapeDataString)),
                     "pageAnimations=" + _pageAnimationsEnabled,
                     "searchEngine=" + _searchEngine,
                     "historyRetentionDays=" + _historyRetentionDays.ToString(CultureInfo.InvariantCulture),
@@ -2498,6 +2783,140 @@ namespace ChenmuBrowser
             catch (Exception ex)
             {
                 _statusLabel.Text = "设置无法保存：" + ex.Message;
+            }
+        }
+
+        private void LoadSessionSnapshot()
+        {
+            _startupSessionUrls.Clear();
+            if (!_restorePreviousSession || _isIsolatedTest)
+                return;
+            try
+            {
+                if (!File.Exists(SessionPath))
+                    return;
+                var urls = new List<string>();
+                var activeIndex = 0;
+                foreach (var line in File.ReadAllLines(SessionPath))
+                {
+                    if (line.StartsWith("activeIndex=", StringComparison.Ordinal))
+                    {
+                        Int32.TryParse(line.Substring("activeIndex=".Length), NumberStyles.Integer,
+                            CultureInfo.InvariantCulture, out activeIndex);
+                        continue;
+                    }
+                    if (!line.StartsWith("url=", StringComparison.Ordinal))
+                        continue;
+                    try
+                    {
+                        var url = GetSessionUrl(Uri.UnescapeDataString(line.Substring("url=".Length)));
+                        if (url != null)
+                            urls.Add(url);
+                    }
+                    catch { }
+                }
+                const int maximumTabs = 40;
+                if (urls.Count > maximumTabs)
+                {
+                    var discardCount = urls.Count - maximumTabs;
+                    urls.RemoveRange(0, discardCount);
+                    activeIndex = Math.Max(0, activeIndex - discardCount);
+                }
+                _startupSessionUrls.AddRange(urls);
+                _startupSessionActiveIndex = urls.Count == 0
+                    ? 0
+                    : Math.Max(0, Math.Min(activeIndex, urls.Count - 1));
+            }
+            catch
+            {
+                _startupSessionUrls.Clear();
+                _startupSessionActiveIndex = 0;
+            }
+        }
+
+        private async Task RestoreSessionAsync()
+        {
+            if (!_restorePreviousSession || _isIsolatedTest || _startupSessionUrls.Count == 0)
+                return;
+
+            var urls = _startupSessionUrls.ToList();
+            _isRestoringSession = true;
+            try
+            {
+                if (_tabs.Count == 0)
+                    CreateNewTab();
+                var firstTab = _tabs[0];
+                for (var index = 0; index < urls.Count; index++)
+                {
+                    if (index == 0)
+                        SwitchToTab(firstTab);
+                    else
+                        CreateNewTab();
+                    await NavigateAsync(urls[index]);
+                }
+                if (_tabs.Count > 0)
+                    SwitchToTab(_tabs[Math.Min(_startupSessionActiveIndex, urls.Count - 1)]);
+                _statusLabel.Text = "已恢复上次普通浏览会话。";
+            }
+            catch (Exception ex)
+            {
+                _statusLabel.Text = "恢复上次浏览会话时遇到问题：" + ex.Message;
+            }
+            finally
+            {
+                _isRestoringSession = false;
+                _startupSessionUrls.Clear();
+                SaveSessionSnapshot();
+            }
+        }
+
+        private void SaveSessionSnapshot()
+        {
+            if (!_restorePreviousSession || _isIsolatedTest || _isRestoringSession ||
+                _startupSessionUrls.Count > 0 || Disposing || IsDisposed)
+                return;
+            try
+            {
+                var savedTabs = new List<KeyValuePair<BrowserTab, string>>();
+                foreach (var tab in _tabs)
+                {
+                    // Private tabs are never written to the ordinary browsing-session snapshot.
+                    if (tab == null || tab.IsPrivate)
+                        continue;
+                    var url = GetSessionUrl(tab.SessionUrl);
+                    if (url == null && tab.WebView != null && tab.WebView.CoreWebView2 != null)
+                        url = GetSessionUrl(tab.WebView.CoreWebView2.Source);
+                    if (url != null)
+                        savedTabs.Add(new KeyValuePair<BrowserTab, string>(tab, url));
+                }
+
+                const int maximumTabs = 40;
+                if (savedTabs.Count > maximumTabs)
+                    savedTabs = savedTabs.Skip(savedTabs.Count - maximumTabs).ToList();
+                if (savedTabs.Count == 0)
+                {
+                    if (File.Exists(SessionPath))
+                        File.Delete(SessionPath);
+                    return;
+                }
+
+                var activeIndex = savedTabs.FindIndex(item => item.Key == _activeTab);
+                if (activeIndex < 0)
+                    activeIndex = savedTabs.Count - 1;
+                var lines = new List<string> { "activeIndex=" + activeIndex.ToString(CultureInfo.InvariantCulture) };
+                lines.AddRange(savedTabs.Select(item => "url=" + Uri.EscapeDataString(item.Value)));
+                Directory.CreateDirectory(_dataRoot);
+                var temporaryPath = SessionPath + ".tmp";
+                File.WriteAllLines(temporaryPath, lines, new System.Text.UTF8Encoding(false));
+                if (File.Exists(SessionPath))
+                    File.Replace(temporaryPath, SessionPath, null);
+                else
+                    File.Move(temporaryPath, SessionPath);
+            }
+            catch (Exception ex)
+            {
+                if (!_statusLabel.IsDisposed && !_statusLabel.Disposing)
+                    _statusLabel.Text = "浏览会话无法保存：" + ex.Message;
             }
         }
 
@@ -2512,15 +2931,16 @@ namespace ChenmuBrowser
                 {
                     try
                     {
-                        var parts = line.Split(new[] { '\t' }, 2);
+                        var parts = line.Split(new[] { '\t' }, 3);
                         Uri url;
-                        if (parts.Length != 2 || !Uri.TryCreate(parts[1], UriKind.Absolute, out url) ||
+                        if (parts.Length < 2 || !Uri.TryCreate(parts[1], UriKind.Absolute, out url) ||
                             (url.Scheme != Uri.UriSchemeHttp && url.Scheme != Uri.UriSchemeHttps))
                             continue;
                         result.Add(new BookmarkItem
                         {
                             Title = Uri.UnescapeDataString(parts[0]),
-                            Url = parts[1]
+                            Url = parts[1],
+                            FolderPath = parts.Length > 2 ? Uri.UnescapeDataString(parts[2]) : String.Empty
                         });
                     }
                     catch
@@ -2538,7 +2958,14 @@ namespace ChenmuBrowser
             try
             {
                 Directory.CreateDirectory(_dataRoot);
-                File.WriteAllLines(BookmarksPath, bookmarks.Select(b => Uri.EscapeDataString(b.Title ?? String.Empty) + "\t" + b.Url));
+                var temporaryPath = BookmarksPath + ".tmp";
+                File.WriteAllLines(temporaryPath, bookmarks.Select(b =>
+                    Uri.EscapeDataString(b.Title ?? String.Empty) + "\t" + b.Url + "\t" +
+                    Uri.EscapeDataString(b.FolderPath ?? String.Empty)));
+                if (File.Exists(BookmarksPath))
+                    File.Replace(temporaryPath, BookmarksPath, null);
+                else
+                    File.Move(temporaryPath, BookmarksPath);
                 return true;
             }
             catch (Exception ex)
@@ -2552,6 +2979,8 @@ namespace ChenmuBrowser
         {
             public string Title { get; set; }
             public bool IsHome { get; set; }
+            public bool IsPrivate { get; set; }
+            public string SessionUrl { get; set; }
             public Panel Header { get; set; }
             public WebView2 WebView { get; set; }
             public Task InitializationTask { get; set; }
@@ -2568,6 +2997,16 @@ namespace ChenmuBrowser
         {
             public string Title { get; set; }
             public string Url { get; set; }
+            public string FolderPath { get; set; }
+            public string DisplayTitle
+            {
+                get
+                {
+                    return String.IsNullOrWhiteSpace(FolderPath)
+                        ? Title
+                        : FolderPath.Replace(BookmarkHtmlTransfer.FolderSeparator, '›') + "  /  " + Title;
+                }
+            }
             public override string ToString() { return Title; }
         }
     }

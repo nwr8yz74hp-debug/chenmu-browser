@@ -306,6 +306,7 @@ namespace ChenmuBrowser
                 refresh();
             };
             refresh();
+            ApplyDialogStyle(dialog);
             dialog.ShowDialog(this);
         }
 
@@ -319,7 +320,7 @@ namespace ChenmuBrowser
                 MinimizeBox = false,
                 MaximizeBox = false,
                 ShowInTaskbar = false,
-                ClientSize = new System.Drawing.Size(440, 350),
+                ClientSize = new System.Drawing.Size(470, 460),
                 Font = Font
             };
             var engineLabel = new Label { Text = "默认搜索", AutoSize = true, Location = new System.Drawing.Point(22, 24) };
@@ -337,16 +338,31 @@ namespace ChenmuBrowser
             var block = new CheckBox { Text = "拦截广告与跟踪域名（随附本地域名列表）", AutoSize = true, Location = new System.Drawing.Point(24, 112), Checked = _blockTrackers };
             var saver = new CheckBox { Text = "省流模式（不加载图片）", AutoSize = true, Location = new System.Drawing.Point(24, 148), Checked = _dataSaver };
             var animations = new CheckBox { Text = "启用轻量页面淡入动画", AutoSize = true, Location = new System.Drawing.Point(24, 184), Checked = _pageAnimationsEnabled };
+            var restoreSession = new CheckBox
+            {
+                Text = "退出后恢复上次普通浏览会话（仅本机保存网址）",
+                AutoSize = true,
+                Location = new System.Drawing.Point(24, 220),
+                Checked = _restorePreviousSession
+            };
+            var manageAllowlist = new Button
+            {
+                Text = "管理站点允许列表…",
+                Width = 190,
+                Height = 32,
+                Location = new System.Drawing.Point(24, 256)
+            };
+            manageAllowlist.Click += delegate { ShowSiteAllowlistDialog(); };
             var note = new Label
             {
-                Text = "Soumu 使用 DuckDuckGo 第三方搜索结果，不是自建索引；结果页可能含第三方广告。\r\n历史文件留在本机；当前搜索词仍会发送给所选搜索服务。",
+                Text = "会话恢复仅在本机保存最多 40 个普通网页网址；私有窗口不会写入会话。\r\n站点例外只绕过随附域名列表，不影响内置防护或省流模式。",
                 AutoSize = false,
-                Location = new System.Drawing.Point(24, 220),
-                Size = new System.Drawing.Size(390, 64),
+                Location = new System.Drawing.Point(24, 302),
+                Size = new System.Drawing.Size(420, 58),
                 ForeColor = Color.FromArgb(105, 117, 131)
             };
-            var cancel = new Button { Text = "取消", Width = 84, Height = 30, Location = new System.Drawing.Point(226, 300), DialogResult = DialogResult.Cancel };
-            var save = new Button { Text = "保存", Width = 84, Height = 30, Location = new System.Drawing.Point(320, 300), DialogResult = DialogResult.OK };
+            var cancel = new Button { Text = "取消", Width = 84, Height = 32, Location = new System.Drawing.Point(276, 406), DialogResult = DialogResult.Cancel };
+            var save = new Button { Text = "保存", Width = 84, Height = 32, Location = new System.Drawing.Point(370, 406), DialogResult = DialogResult.OK };
             dialog.Controls.Add(engineLabel);
             dialog.Controls.Add(engine);
             dialog.Controls.Add(retentionLabel);
@@ -354,26 +370,175 @@ namespace ChenmuBrowser
             dialog.Controls.Add(block);
             dialog.Controls.Add(saver);
             dialog.Controls.Add(animations);
+            dialog.Controls.Add(restoreSession);
+            dialog.Controls.Add(manageAllowlist);
             dialog.Controls.Add(note);
             dialog.Controls.Add(cancel);
             dialog.Controls.Add(save);
             dialog.CancelButton = cancel;
             dialog.AcceptButton = save;
+            ApplyDialogStyle(dialog);
             if (dialog.ShowDialog(this) != DialogResult.OK)
                 return;
             _searchEngine = engine.SelectedIndex == 1 ? "bing" : engine.SelectedIndex == 2 ? "soumu" : "google";
             _historyRetentionDays = retentionValues[Math.Max(0, retention.SelectedIndex)];
             _blockTrackers = block.Checked;
             _dataSaver = saver.Checked;
+            var restoreSessionChanged = _restorePreviousSession != restoreSession.Checked;
+            _restorePreviousSession = restoreSession.Checked;
             var animationsChanged = _pageAnimationsEnabled != animations.Checked;
             _pageAnimationsEnabled = animations.Checked;
             if (_homeSearchEngineButton != null)
                 _homeSearchEngineButton.Text = GetSearchEngineDisplayName(_searchEngine) + " ▾";
             SavePreferences();
+            if (restoreSessionChanged)
+            {
+                if (_restorePreviousSession)
+                    SaveSessionSnapshot();
+                else if (File.Exists(SessionPath))
+                {
+                    try { File.Delete(SessionPath); }
+                    catch { _statusLabel.Text = "会话恢复已关闭，但旧快照无法删除。"; }
+                }
+            }
             ReadHistoryEntries();
             if (animationsChanged)
                 ApplyPageAnimations();
             _statusLabel.Text = "浏览器设置已保存。";
+        }
+
+        private void ShowSiteAllowlistDialog()
+        {
+            var dialog = new Form
+            {
+                Text = "站点允许列表",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowInTaskbar = false,
+                ClientSize = new System.Drawing.Size(480, 390),
+                Font = Font
+            };
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 5,
+                Padding = new Padding(18, 14, 18, 14),
+                BackColor = Color.FromArgb(249, 251, 255)
+            };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+            var hint = new Label
+            {
+                Text = "允许列表中的站点及其子域名绕过随附的广告/跟踪域名表。",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.FromArgb(92, 108, 126)
+            };
+            var inputRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+            inputRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            inputRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92F));
+            inputRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            var hostBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 253, Margin = new Padding(0, 2, 8, 2) };
+            SetCueBanner(hostBox, "输入域名，例如 example.com");
+            var add = new Button { Text = "添加域名", Dock = DockStyle.Fill };
+            inputRow.Controls.Add(hostBox, 0, 0);
+            inputRow.Controls.Add(add, 1, 0);
+            var current = new Button
+            {
+                Text = "允许当前网页及其子域名",
+                Width = 230,
+                Height = 30,
+                Anchor = AnchorStyles.Left
+            };
+            var currentRow = new Panel { Dock = DockStyle.Fill };
+            currentRow.Controls.Add(current);
+            var list = new ListBox { Dock = DockStyle.Fill, IntegralHeight = false };
+            var footer = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.RightToLeft,
+                WrapContents = false,
+                Padding = new Padding(0, 5, 0, 0)
+            };
+            var close = new Button { Text = "完成", Width = 84, Height = 30, DialogResult = DialogResult.Cancel };
+            var remove = new Button { Text = "移除所选", Width = 96, Height = 30 };
+            footer.Controls.Add(close);
+            footer.Controls.Add(remove);
+            layout.Controls.Add(hint, 0, 0);
+            layout.Controls.Add(inputRow, 0, 1);
+            layout.Controls.Add(currentRow, 0, 2);
+            layout.Controls.Add(list, 0, 3);
+            layout.Controls.Add(footer, 0, 4);
+            dialog.Controls.Add(layout);
+            dialog.CancelButton = close;
+            dialog.AcceptButton = add;
+
+            Action refresh = delegate
+            {
+                list.BeginUpdate();
+                list.Items.Clear();
+                foreach (var host in _allowedHosts.OrderBy(item => item, StringComparer.OrdinalIgnoreCase))
+                    list.Items.Add(host);
+                list.EndUpdate();
+            };
+            Action<string> addHost = delegate(string value)
+            {
+                var host = NormalizeHost(value);
+                if (host.Length == 0)
+                {
+                    MessageBox.Show(dialog, "请输入有效的域名或 IP 地址（不含协议、路径或端口）。", "站点允许列表",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                if (_allowedHosts.Add(host))
+                    SavePreferences();
+                refresh();
+                hostBox.Clear();
+            };
+            add.Click += delegate { addHost(hostBox.Text); };
+            hostBox.KeyDown += delegate(object sender, KeyEventArgs args)
+            {
+                if (args.KeyCode == Keys.Enter)
+                {
+                    args.SuppressKeyPress = true;
+                    addHost(hostBox.Text);
+                }
+            };
+            current.Click += delegate
+            {
+                var source = _activeTab == null || _activeTab.WebView == null || _activeTab.WebView.CoreWebView2 == null
+                    ? null
+                    : _activeTab.WebView.CoreWebView2.Source;
+                Uri uri;
+                if (String.IsNullOrWhiteSpace(source) || !Uri.TryCreate(source, UriKind.Absolute, out uri) ||
+                    (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                {
+                    MessageBox.Show(dialog, "当前标签页没有可加入允许列表的 HTTP 或 HTTPS 网站。", "站点允许列表",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                addHost(uri.Host);
+            };
+            remove.Click += delegate
+            {
+                var host = list.SelectedItem as string;
+                if (host == null)
+                    return;
+                _allowedHosts.Remove(host);
+                SavePreferences();
+                refresh();
+            };
+            refresh();
+            ApplyDialogStyle(dialog);
+            dialog.Shown += delegate { hostBox.Focus(); };
+            dialog.ShowDialog(this);
         }
 
         private async void OpenOfficialWebsite()
