@@ -300,7 +300,7 @@ namespace ChenmuBrowser
             _tabStrip.Dock = DockStyle.Top;
             _tabStrip.Height = 40;
             _tabStrip.Padding = new Padding(7, 3, 7, 3);
-            _tabStrip.BackColor = Color.FromArgb(238, 242, 247);
+            _tabStrip.BackColor = _header.BackColor;
             _tabHeaders.Dock = DockStyle.Fill;
             _tabHeaders.AutoScroll = true;
             _tabHeaders.WrapContents = false;
@@ -312,14 +312,14 @@ namespace ChenmuBrowser
                 Dock = DockStyle.Right,
                 Width = 34,
                 FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(238, 242, 247),
+                BackColor = _tabStrip.BackColor,
                 ForeColor = Color.FromArgb(66, 82, 100),
                 Font = new Font("Segoe UI", 16F, FontStyle.Regular, GraphicsUnit.Point),
                 Cursor = Cursors.Hand,
                 TabStop = false
             };
             newTabButton.FlatAppearance.BorderSize = 0;
-            newTabButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(225, 232, 240);
+            newTabButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(239, 244, 250);
             newTabButton.Click += delegate { CreateNewTab(); FocusAddress(); };
             _toolTip.SetToolTip(newTabButton, "新建标签页（Ctrl+T）");
             _tabStrip.Controls.Add(_tabHeaders);
@@ -361,7 +361,7 @@ namespace ChenmuBrowser
                 Width = 196,
                 Height = 32,
                 Margin = new Padding(2, 1, 4, 1),
-                BackColor = Color.FromArgb(230, 235, 242),
+                BackColor = Color.FromArgb(243, 246, 250),
                 Tag = tab
             };
             header.Paint += delegate(object sender, PaintEventArgs e)
@@ -495,7 +495,7 @@ namespace ChenmuBrowser
                 if (tab.Header == null || tab.Header.IsDisposed)
                     continue;
                 var active = tab == _activeTab;
-                tab.Header.BackColor = active ? Color.White : Color.FromArgb(230, 235, 242);
+                tab.Header.BackColor = active ? Color.White : Color.FromArgb(243, 246, 250);
                 var layout = tab.Header.Controls.Count == 0 ? null : tab.Header.Controls[0] as TableLayoutPanel;
                 if (layout == null)
                     continue;
@@ -768,20 +768,18 @@ namespace ChenmuBrowser
                 BackColor = Color.Transparent
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 70F));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 30F));
-            layout.Controls.Add(new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Margin = Padding.Empty }, 0, 0);
-            layout.Controls.Add(new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Margin = Padding.Empty }, 0, 5);
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 78F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 104F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 110F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
 
             var hero = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                AutoSize = false,
+                Height = 76,
                 ColumnCount = 1,
                 RowCount = 2,
                 BackColor = Color.Transparent,
@@ -962,8 +960,8 @@ namespace ChenmuBrowser
 
             _bookmarksContainer = new TableLayoutPanel
             {
-                Dock = DockStyle.Top,
-                Height = 130,
+                Dock = DockStyle.Fill,
+                Height = 110,
                 ColumnCount = 3,
                 RowCount = 1,
                 BackColor = Color.Transparent,
@@ -979,14 +977,14 @@ namespace ChenmuBrowser
                 SurfaceColor = Color.White,
                 BorderColor = Color.FromArgb(228, 234, 241),
                 CornerRadius = 17,
-                Padding = new Padding(18, 10, 18, 10),
+                Padding = new Padding(16, 8, 16, 8),
                 Margin = new Padding(0, 2, 0, 2)
             };
             _bookmarkHeading = new Label
             {
                 Text = "常用收藏",
                 Dock = DockStyle.Top,
-                Height = 30,
+                Height = 26,
                 Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold, GraphicsUnit.Point),
                 ForeColor = Color.FromArgb(60, 76, 95),
                 BackColor = Color.White,
@@ -996,9 +994,9 @@ namespace ChenmuBrowser
             {
                 Dock = DockStyle.Fill,
                 AutoScroll = true,
-                WrapContents = true,
+                WrapContents = false,
                 FlowDirection = FlowDirection.LeftToRight,
-                Padding = new Padding(0, 6, 0, 0),
+                Padding = new Padding(0, 4, 0, 0),
                 BackColor = Color.White
             };
             _homeBookmarks.SizeChanged += delegate
@@ -1026,14 +1024,24 @@ namespace ChenmuBrowser
                     ? new Padding(18, 6, 18, 6)
                     : new Padding(32, 20, 32, 16);
                 var availableWidth = Math.Max(1, layout.ClientSize.Width - layout.Padding.Horizontal);
-                searchFrame.Width = Math.Min(760, availableWidth);
-                searchFrame.Height = compact ? 60 : 64;
+                var scale = panel.DeviceDpi / 96F;
+                searchFrame.Width = Math.Min((int)Math.Round(760 * scale), availableWidth);
+                searchFrame.Height = (int)Math.Round((compact ? 60 : 64) * scale);
                 hero.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
                 searchFrame.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
                 shortcuts.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
                 shortcuts.MaximumSize = new Size(availableWidth, 0);
-                shortcuts.WrapContents = availableWidth < 480;
+                shortcuts.WrapContents = availableWidth < (int)Math.Round(480 * scale);
+                layout.RowStyles[1].SizeType = SizeType.Absolute;
+                layout.RowStyles[1].Height = Math.Max((int)Math.Round((compact ? 72 : 80) * scale),
+                    hero.GetPreferredSize(new Size(availableWidth, 0)).Height + hero.Margin.Vertical);
+                layout.RowStyles[2].SizeType = SizeType.Absolute;
+                layout.RowStyles[2].Height = searchFrame.Height + searchFrame.Margin.Vertical;
+                layout.RowStyles[3].SizeType = SizeType.Absolute;
+                layout.RowStyles[3].Height = Math.Max((int)Math.Round(90 * scale),
+                    shortcuts.GetPreferredSize(new Size(availableWidth, 0)).Height + shortcuts.Margin.Vertical);
                 AdjustBookmarkAreaHeight();
+                layout.PerformLayout();
             };
             layout.SizeChanged += delegate { updateHomeLayout(); };
             panel.SizeChanged += delegate { updateHomeLayout(); };
@@ -1141,7 +1149,7 @@ namespace ChenmuBrowser
                 var emptyState = new RoundedPanel
                 {
                     Width = 430,
-                    Height = 62,
+                    Height = 54,
                     Margin = new Padding(0, 4, 0, 0),
                     Padding = new Padding(10, 6, 10, 6),
                     SurfaceColor = Color.FromArgb(248, 250, 253),
@@ -1204,29 +1212,24 @@ namespace ChenmuBrowser
                 _bookmarkArea == null || _bookmarkHeading == null)
                 return;
 
-            var width = Math.Max(0, _homeBookmarks.ClientSize.Width - _homeBookmarks.Padding.Horizontal);
             var items = _homeBookmarks.Controls.Cast<Control>().ToList();
-            var visibleRows = 1;
-            if (items.Count > 1 && width > 0)
-            {
-                var itemWidth = Math.Max(1, items[0].Width + items[0].Margin.Horizontal);
-                var itemsPerRow = Math.Max(1, (width + items[0].Margin.Horizontal) / itemWidth);
-                var requiredRows = (items.Count + itemsPerRow - 1) / itemsPerRow;
-                var viewportHeight = _viewport == null ? 0 : _viewport.ClientSize.Height;
-                var maximumVisibleRows = viewportHeight < 430 ? 1 : 2;
-                visibleRows = Math.Min(maximumVisibleRows, requiredRows);
-            }
-
-            var rowHeight = items.Count == 0
-                ? 0
-                : items.Max(item => item.Height + item.Margin.Vertical);
-            var listHeight = Math.Max(72, Math.Min(138,
-                _homeBookmarks.Padding.Vertical + rowHeight * visibleRows));
+            var scale = _bookmarkArea.DeviceDpi / 96F;
+            var rowHeight = items.Count == 0 ? 0 : items.Max(item => item.Height + item.Margin.Vertical);
+            var listHeight = Math.Max((int)Math.Round(60 * scale), Math.Min((int)Math.Round(78 * scale),
+                _homeBookmarks.Padding.Vertical + rowHeight));
             var areaHeight = _bookmarkHeading.Height + listHeight + _bookmarkArea.Padding.Vertical +
                 _bookmarkArea.Margin.Vertical;
 
             _bookmarksContainer.Height = areaHeight;
             _bookmarkArea.Height = areaHeight - _bookmarkArea.Margin.Vertical;
+            var parentLayout = _bookmarksContainer.Parent as TableLayoutPanel;
+            if (parentLayout != null && parentLayout.RowStyles.Count > 4 &&
+                Math.Abs(parentLayout.RowStyles[4].Height - areaHeight) > 0.5F)
+            {
+                parentLayout.RowStyles[4].SizeType = SizeType.Absolute;
+                parentLayout.RowStyles[4].Height = areaHeight;
+                parentLayout.PerformLayout();
+            }
             _bookmarkArea.PerformLayout();
             _bookmarksContainer.PerformLayout();
         }
@@ -1235,9 +1238,9 @@ namespace ChenmuBrowser
         {
             var tile = new RoundedPanel
             {
-                Width = 232,
-                Height = 58,
-                Margin = new Padding(0, 4, 10, 4),
+                Width = 212,
+                Height = 54,
+                Margin = new Padding(0, 3, 8, 3),
                 Padding = new Padding(6, 4, 6, 4),
                 SurfaceColor = Color.FromArgb(249, 251, 254),
                 BorderColor = Color.FromArgb(230, 236, 243),
