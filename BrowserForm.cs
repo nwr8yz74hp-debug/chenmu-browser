@@ -34,6 +34,10 @@ namespace ChenmuBrowser
         private Panel _homeView;
         private Panel _errorView;
         private FlowLayoutPanel _homeBookmarks;
+        private TableLayoutPanel _bookmarksContainer;
+        private RoundedPanel _bookmarkArea;
+        private Label _bookmarkHeading;
+        private int _lastBookmarkWidth = -1;
         private TextBox _homeSearchBox;
         private Button _homeSearchEngineButton;
         private WebView2 _webView;
@@ -62,7 +66,7 @@ namespace ChenmuBrowser
             }
             catch { }
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(900, 600);
+            MinimumSize = new Size(640, 500);
             Size = new Size(1180, 780);
             BackColor = Color.White;
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
@@ -920,19 +924,20 @@ namespace ChenmuBrowser
             shortcuts.Controls.Add(CreateShortcutCard("☆", "书签", Color.FromArgb(117, 97, 193), ShowBookmarksDialog));
             layout.Controls.Add(shortcuts, 0, 2);
 
-            var bookmarksContainer = new TableLayoutPanel
+            _bookmarksContainer = new TableLayoutPanel
             {
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
+                Height = 130,
                 ColumnCount = 3,
                 RowCount = 1,
                 BackColor = Color.Transparent,
                 Margin = new Padding(0)
             };
-            bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12F));
-            bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 76F));
-            bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12F));
-            bookmarksContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            var bookmarkArea = new RoundedPanel
+            _bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12F));
+            _bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 76F));
+            _bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12F));
+            _bookmarksContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            _bookmarkArea = new RoundedPanel
             {
                 Dock = DockStyle.Fill,
                 SurfaceColor = Color.White,
@@ -941,7 +946,7 @@ namespace ChenmuBrowser
                 Padding = new Padding(18, 10, 18, 10),
                 Margin = new Padding(0, 2, 0, 2)
             };
-            var bookmarkHeading = new Label
+            _bookmarkHeading = new Label
             {
                 Text = "常用收藏",
                 Dock = DockStyle.Top,
@@ -960,12 +965,42 @@ namespace ChenmuBrowser
                 Padding = new Padding(0, 6, 0, 0),
                 BackColor = Color.White
             };
-            bookmarkArea.Controls.Add(_homeBookmarks);
-            bookmarkArea.Controls.Add(bookmarkHeading);
-            bookmarksContainer.Controls.Add(bookmarkArea, 1, 0);
-            layout.Controls.Add(bookmarksContainer, 0, 3);
+            _homeBookmarks.SizeChanged += delegate
+            {
+                var width = _homeBookmarks.ClientSize.Width;
+                if (width != _lastBookmarkWidth)
+                {
+                    _lastBookmarkWidth = width;
+                    AdjustBookmarkAreaHeight();
+                }
+            };
+            _bookmarkArea.Controls.Add(_homeBookmarks);
+            _bookmarkArea.Controls.Add(_bookmarkHeading);
+            _bookmarksContainer.Controls.Add(_bookmarkArea, 1, 0);
+            layout.Controls.Add(_bookmarksContainer, 0, 3);
 
             panel.Controls.Add(layout);
+            Action updateHomeLayout = delegate
+            {
+                if (panel.ClientSize.Width <= 0)
+                    return;
+
+                var compact = panel.ClientSize.Width < 980 || panel.ClientSize.Height < 520;
+                layout.Padding = compact
+                    ? new Padding(18, 6, 18, 6)
+                    : new Padding(32, 20, 32, 16);
+                var availableWidth = Math.Max(1, layout.ClientSize.Width - layout.Padding.Horizontal);
+                searchFrame.Width = Math.Min(760, availableWidth);
+                searchFrame.Height = compact ? 60 : 64;
+                hero.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
+                searchFrame.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
+                shortcuts.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
+                shortcuts.MaximumSize = new Size(availableWidth, 0);
+                shortcuts.WrapContents = availableWidth < 480;
+                AdjustBookmarkAreaHeight();
+            };
+            panel.SizeChanged += delegate { updateHomeLayout(); };
+            updateHomeLayout();
             RefreshHomeBookmarks();
             return panel;
         }
@@ -1113,11 +1148,46 @@ namespace ChenmuBrowser
                 emptyState.Controls.Add(emptyCopy);
                 emptyState.Controls.Add(emptyIcon);
                 _homeBookmarks.Controls.Add(emptyState);
+                AdjustBookmarkAreaHeight();
                 return;
             }
 
             foreach (var bookmark in bookmarks)
                 _homeBookmarks.Controls.Add(CreateBookmarkTile(bookmark));
+            AdjustBookmarkAreaHeight();
+        }
+
+        private void AdjustBookmarkAreaHeight()
+        {
+            if (_homeBookmarks == null || _bookmarksContainer == null ||
+                _bookmarkArea == null || _bookmarkHeading == null)
+                return;
+
+            var width = Math.Max(0, _homeBookmarks.ClientSize.Width - _homeBookmarks.Padding.Horizontal);
+            var items = _homeBookmarks.Controls.Cast<Control>().ToList();
+            var visibleRows = 1;
+            if (items.Count > 1 && width > 0)
+            {
+                var itemWidth = Math.Max(1, items[0].Width + items[0].Margin.Horizontal);
+                var itemsPerRow = Math.Max(1, (width + items[0].Margin.Horizontal) / itemWidth);
+                var requiredRows = (items.Count + itemsPerRow - 1) / itemsPerRow;
+                var viewportHeight = _viewport == null ? 0 : _viewport.ClientSize.Height;
+                var maximumVisibleRows = viewportHeight < 430 ? 1 : 2;
+                visibleRows = Math.Min(maximumVisibleRows, requiredRows);
+            }
+
+            var rowHeight = items.Count == 0
+                ? 0
+                : items.Max(item => item.Height + item.Margin.Vertical);
+            var listHeight = Math.Max(72, Math.Min(138,
+                _homeBookmarks.Padding.Vertical + rowHeight * visibleRows));
+            var areaHeight = _bookmarkHeading.Height + listHeight + _bookmarkArea.Padding.Vertical +
+                _bookmarkArea.Margin.Vertical;
+
+            _bookmarksContainer.Height = areaHeight;
+            _bookmarkArea.Height = areaHeight - _bookmarkArea.Margin.Vertical;
+            _bookmarkArea.PerformLayout();
+            _bookmarksContainer.PerformLayout();
         }
 
         private Control CreateBookmarkTile(BookmarkItem bookmark)
