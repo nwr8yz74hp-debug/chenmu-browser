@@ -809,7 +809,7 @@ namespace ChenmuBrowser
                 brandLogo.Visible = false;
             var title = new Label
             {
-                Text = "欢迎使用 CHENMU Browser",
+                Text = GetHomeGreeting(),
                 AutoSize = true,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Font = new Font("Microsoft YaHei UI", 25F, FontStyle.Bold, GraphicsUnit.Point),
@@ -878,10 +878,11 @@ namespace ChenmuBrowser
             _homeSearchBox = new TextBox
             {
                 BorderStyle = BorderStyle.None,
-                Dock = DockStyle.Fill,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right,
+                Height = 30,
                 Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Regular, GraphicsUnit.Point),
                 ForeColor = Color.FromArgb(48, 58, 70),
-                Margin = new Padding(5, 6, 4, 4)
+                Margin = new Padding(5, 0, 4, 0)
             };
             SetCueBanner(_homeSearchBox, "搜索网页，或直接输入网址");
             _homeSearchBox.KeyDown += delegate(object sender, KeyEventArgs e)
@@ -972,6 +973,7 @@ namespace ChenmuBrowser
                 var availableWidth = Math.Max(1, layout.ClientSize.Width - layout.Padding.Horizontal);
                 searchFrame.Width = Math.Min((int)Math.Round(760 * scale), availableWidth);
                 searchFrame.Height = (int)Math.Round((compact ? 56 : 62) * scale);
+                _homeSearchBox.Height = (int)Math.Round((compact ? 30 : 32) * scale);
                 layout.RowStyles[1].SizeType = SizeType.Absolute;
                 layout.RowStyles[1].Height = (int)Math.Round((compact ? 74 : 86) * scale);
                 layout.RowStyles[2].SizeType = SizeType.Absolute;
@@ -1072,6 +1074,18 @@ namespace ChenmuBrowser
         private async void SearchFromHome()
         {
             await NavigateAsync(_homeSearchBox.Text);
+        }
+
+        private static string GetHomeGreeting()
+        {
+            var hour = DateTime.Now.Hour;
+            if (hour >= 5 && hour < 12)
+                return "早上好，今天想去哪儿？";
+            if (hour >= 12 && hour < 18)
+                return "下午好，今天想去哪儿？";
+            if (hour >= 18 && hour < 23)
+                return "晚上好，今天想去哪儿？";
+            return "夜深了，今天想去哪儿？";
         }
 
         private static string GetBookmarkHost(string url)
