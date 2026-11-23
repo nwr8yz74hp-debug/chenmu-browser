@@ -450,7 +450,7 @@ namespace ChenmuBrowser
             {
                 settingsMenu.Show(settingsButton, new Point(0, settingsButton.Height));
             });
-            chrome.Controls.Add(CreateChromeButton("↓", "查看下载", ShowDownloadsDialog), 7, 0);
+            chrome.Controls.Add(CreateReaderChromeButton(), 7, 0);
             chrome.Controls.Add(settingsButton, 8, 0);
             _header.Controls.Add(chrome);
 
@@ -701,6 +701,32 @@ namespace ChenmuBrowser
             FocusAddress();
         }
 
+        private void OpenReader()
+        {
+            if (_activeTab != null && _activeTab.IsReader && _activeTab.ReaderView != null)
+            {
+                SwitchToTab(_activeTab);
+                return;
+            }
+
+            CreateNewTab();
+            var tab = _activeTab;
+            if (tab == null)
+                return;
+
+            tab.IsHome = false;
+            tab.IsReader = true;
+            tab.Title = "CHENMU Reader";
+            var readerView = new ReaderView(GetWebViewEnvironmentAsync)
+            {
+                Dock = DockStyle.Fill,
+                Visible = false
+            };
+            tab.ReaderView = readerView;
+            _viewport.Controls.Add(readerView);
+            SwitchToTab(tab);
+        }
+
         private void CloseTab(BrowserTab tab)
         {
             var index = _tabs.IndexOf(tab);
@@ -720,6 +746,12 @@ namespace ChenmuBrowser
                 _viewport.Controls.Remove(tab.WebView);
                 tab.WebView.Dispose();
                 tab.WebView = null;
+            }
+            if (tab.ReaderView != null)
+            {
+                _viewport.Controls.Remove(tab.ReaderView);
+                tab.ReaderView.Dispose();
+                tab.ReaderView = null;
             }
             if (_tabs.Count == 0)
             {
@@ -745,10 +777,25 @@ namespace ChenmuBrowser
             _webView = tab.WebView;
             HideErrorView();
             foreach (var item in _tabs)
+            {
                 if (item.WebView != null)
                     item.WebView.Visible = false;
+                if (item.ReaderView != null)
+                    item.ReaderView.Visible = false;
+            }
 
-            if (tab.IsHome || tab.WebView == null || tab.WebView.CoreWebView2 == null)
+            if (tab.IsReader && tab.ReaderView != null)
+            {
+                tab.IsHome = false;
+                _webView = null;
+                _homeView.Visible = false;
+                tab.ReaderView.Visible = true;
+                tab.ReaderView.BringToFront();
+                _addressBox.Text = String.Empty;
+                _statusLabel.Text = "CHENMU Reader · 本地阅读";
+                Text = "CHENMU Reader - CHENMU Browser" + (_isIsolatedTest ? "（隔离测试）" : String.Empty);
+            }
+            else if (tab.IsHome || tab.WebView == null || tab.WebView.CoreWebView2 == null)
             {
                 tab.IsHome = true;
                 _webView = tab.WebView;
@@ -899,6 +946,12 @@ namespace ChenmuBrowser
             if (keyData == (Keys.Control | Keys.L))
             {
                 FocusAddress();
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.O) && _activeTab != null &&
+                _activeTab.IsReader && _activeTab.ReaderView != null)
+            {
+                _activeTab.ReaderView.ShowOpenFileDialog();
                 return true;
             }
             if (keyData == (Keys.Control | Keys.D))
@@ -1091,6 +1144,29 @@ namespace ChenmuBrowser
             {
                 _statusLabel.Text = "无法访问剪贴板。";
             }
+        }
+
+        private Button CreateReaderChromeButton()
+        {
+            var button = new RoundedButton
+            {
+                Text = "\uE8A5",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(2),
+                CornerRadius = 15,
+                BackColor = Color.FromArgb(248, 250, 253),
+                ForeColor = Color.FromArgb(198, 67, 77),
+                Font = new Font("Segoe MDL2 Assets", 13F, FontStyle.Regular, GraphicsUnit.Point),
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
+                TabStop = false,
+                AccessibleName = "CHENMU Reader · 本地阅读"
+            };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(250, 237, 239);
+            button.Click += delegate { OpenReader(); };
+            _toolTip.SetToolTip(button, "CHENMU Reader · 在浏览器内阅读本地文件");
+            return button;
         }
 
         private Button CreateChromeButton(string text, string tooltip, Action action)
@@ -1537,6 +1613,19 @@ namespace ChenmuBrowser
             if (_activeTab == null)
                 CreateNewTab();
             var tab = _activeTab;
+            if (tab.IsReader)
+            {
+                if (tab.ReaderView != null)
+                {
+                    _viewport.Controls.Remove(tab.ReaderView);
+                    tab.ReaderView.Dispose();
+                    tab.ReaderView = null;
+                }
+                tab.IsReader = false;
+                tab.IsHome = true;
+                tab.Title = "新标签页";
+                UpdateTabHeaders();
+            }
             try
             {
                 await EnsureWebViewAsync(tab);
@@ -1878,6 +1967,16 @@ namespace ChenmuBrowser
         {
             if (_activeTab == null)
                 CreateNewTab();
+            if (_activeTab.IsReader)
+            {
+                if (_activeTab.ReaderView != null)
+                {
+                    _viewport.Controls.Remove(_activeTab.ReaderView);
+                    _activeTab.ReaderView.Dispose();
+                    _activeTab.ReaderView = null;
+                }
+                _activeTab.IsReader = false;
+            }
             _activeTab.IsHome = true;
             _activeTab.Title = "新标签页";
             _activeTab.SessionUrl = null;
@@ -2031,36 +2130,42 @@ namespace ChenmuBrowser
             {
                 Text = "书签",
                 StartPosition = FormStartPosition.CenterParent,
-                Size = new Size(640, 430),
-                MinimumSize = new Size(520, 320),
+                AutoScaleMode = AutoScaleMode.Dpi,
+                Size = new Size(760, 520),
+                MinimumSize = new Size(600, 390),
                 FormBorderStyle = FormBorderStyle.Sizable,
                 MinimizeBox = false,
                 MaximizeBox = false
             };
 
-            var list = new ListBox { Dock = DockStyle.Fill, IntegralHeight = false };
+            var list = new ListBox { Dock = DockStyle.Fill, IntegralHeight = false, HorizontalScrollbar = true };
             var items = ReadBookmarks();
             foreach (var item in items)
                 list.Items.Add(item);
             list.DisplayMember = "DisplayTitle";
 
-            var buttons = new FlowLayoutPanel
+            var buttons = new TableLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 48,
-                FlowDirection = FlowDirection.RightToLeft,
-                Padding = new Padding(6)
+                Height = 58,
+                ColumnCount = 5,
+                RowCount = 1,
+                Padding = new Padding(6),
+                BackColor = Color.White
             };
-            var closeButton = new Button { Text = "关闭", Width = 85, DialogResult = DialogResult.Cancel };
-            var deleteButton = new Button { Text = "删除", Width = 85 };
-            var openButton = new Button { Text = "打开", Width = 85 };
-            var exportButton = new Button { Text = "导出 HTML", Width = 90 };
-            var importButton = new Button { Text = "导入 HTML", Width = 90 };
-            buttons.Controls.Add(closeButton);
-            buttons.Controls.Add(deleteButton);
-            buttons.Controls.Add(openButton);
-            buttons.Controls.Add(exportButton);
-            buttons.Controls.Add(importButton);
+            for (var column = 0; column < 5; column++)
+                buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20F));
+            buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            var importButton = new Button { Text = "导入 HTML", Dock = DockStyle.Fill, Margin = new Padding(3) };
+            var exportButton = new Button { Text = "导出 HTML", Dock = DockStyle.Fill, Margin = new Padding(3) };
+            var openButton = new Button { Text = "打开", Dock = DockStyle.Fill, Margin = new Padding(3) };
+            var deleteButton = new Button { Text = "删除", Dock = DockStyle.Fill, Margin = new Padding(3) };
+            var closeButton = new Button { Text = "关闭", Dock = DockStyle.Fill, Margin = new Padding(3), DialogResult = DialogResult.Cancel };
+            buttons.Controls.Add(importButton, 0, 0);
+            buttons.Controls.Add(exportButton, 1, 0);
+            buttons.Controls.Add(openButton, 2, 0);
+            buttons.Controls.Add(deleteButton, 3, 0);
+            buttons.Controls.Add(closeButton, 4, 0);
             dialog.Controls.Add(list);
             dialog.Controls.Add(buttons);
             dialog.CancelButton = closeButton;
@@ -2068,7 +2173,11 @@ namespace ChenmuBrowser
 
             openButton.Click += async delegate { await NavigateSelectedBookmarkAsync(list, dialog); };
             list.DoubleClick += async delegate { await NavigateSelectedBookmarkAsync(list, dialog); };
-            importButton.Click += delegate { ImportBookmarksFromHtml(list, items, dialog); };
+            importButton.Click += delegate
+            {
+                ImportBookmarksFromHtml(list, items, dialog);
+                UpdateBookmarkListHorizontalExtent(list, items);
+            };
             exportButton.Click += delegate { ExportBookmarksToHtml(items, dialog); };
             deleteButton.Click += delegate
             {
@@ -2084,7 +2193,18 @@ namespace ChenmuBrowser
                     list.SelectedIndex = Math.Min(current, list.Items.Count - 1);
             };
             ApplyDialogStyle(dialog);
+            dialog.Shown += delegate { UpdateBookmarkListHorizontalExtent(list, items); };
             dialog.ShowDialog(this);
+        }
+
+        private static void UpdateBookmarkListHorizontalExtent(ListBox list, IEnumerable<BookmarkItem> items)
+        {
+            if (list == null || list.IsDisposed || items == null)
+                return;
+            var width = items.Select(item => TextRenderer.MeasureText(item.DisplayTitle ?? String.Empty, list.Font).Width)
+                .DefaultIfEmpty(0)
+                .Max();
+            list.HorizontalExtent = Math.Min(100000, width + 24);
         }
 
         private void ImportBookmarksFromHtml(ListBox list, List<BookmarkItem> items, Form owner)
@@ -2983,6 +3103,8 @@ namespace ChenmuBrowser
             public string SessionUrl { get; set; }
             public Panel Header { get; set; }
             public WebView2 WebView { get; set; }
+            public ReaderView ReaderView { get; set; }
+            public bool IsReader { get; set; }
             public Task InitializationTask { get; set; }
         }
 
