@@ -1,6 +1,8 @@
 Unicode true
 RequestExecutionLevel user
 !include "MUI2.nsh"
+!define MUI_ICON "Assets\CHENMU.ico"
+!define MUI_UNICON "Assets\CHENMU.ico"
 
 !ifndef PRODUCT_VERSION
 !define PRODUCT_VERSION "1.0.0"
