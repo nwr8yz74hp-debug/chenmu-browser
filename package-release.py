@@ -46,11 +46,14 @@ def main() -> None:
                 continue
             archive.write(path, path.relative_to(DIST).as_posix())
 
-    subprocess.run(
-        ["git", "archive", "--format=zip", f"--output={SOURCE_ZIP}", "HEAD"],
-        cwd=ROOT,
-        check=True,
-    )
+    tracked_files = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).split(b"\0")
+    with zipfile.ZipFile(SOURCE_ZIP, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for raw_path in tracked_files:
+            if not raw_path:
+                continue
+            path = ROOT / raw_path.decode("utf-8")
+            if path.is_file():
+                archive.write(path, path.relative_to(ROOT).as_posix())
 
     assets = (INSTALLER, PORTABLE_ZIP, SOURCE_ZIP)
     lines = [f"{sha256(path)}  {path.name}" for path in assets]

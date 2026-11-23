@@ -20,6 +20,8 @@ namespace ChenmuBrowser
         private static extern IntPtr SendMessage(IntPtr hWnd, int message, IntPtr wParam, string lParam);
 
         private readonly Panel _header = new Panel();
+        private readonly Panel _tabStrip = new Panel();
+        private readonly FlowLayoutPanel _tabHeaders = new FlowLayoutPanel();
         private readonly TextBox _addressBox = new TextBox();
         private readonly Panel _viewport = new Panel();
         private readonly Panel _statusPanel = new Panel();
@@ -34,9 +36,11 @@ namespace ChenmuBrowser
         private FlowLayoutPanel _homeBookmarks;
         private TextBox _homeSearchBox;
         private Button _homeSearchEngineButton;
-        private Label _privacyLabel;
         private WebView2 _webView;
-        private Task _initializationTask;
+        private readonly List<BrowserTab> _tabs = new List<BrowserTab>();
+        private BrowserTab _activeTab;
+        private Task<CoreWebView2Environment> _webViewEnvironmentTask;
+        private readonly List<DownloadEntry> _downloads = new List<DownloadEntry>();
         private bool _blockTrackers = true;
         private bool _dataSaver;
         private string _searchEngine = "google";
@@ -61,7 +65,7 @@ namespace ChenmuBrowser
             MinimumSize = new Size(900, 600);
             Size = new Size(1180, 780);
             BackColor = Color.White;
-            Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+            Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
             LoadPreferences();
             LoadBlocklist();
@@ -114,7 +118,7 @@ namespace ChenmuBrowser
             var chrome = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 8,
+                ColumnCount = 9,
                 RowCount = 1,
                 Padding = new Padding(8, 7, 8, 7),
                 BackColor = _header.BackColor
@@ -122,7 +126,7 @@ namespace ChenmuBrowser
             for (var i = 0; i < 4; i++)
                 chrome.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42F));
             chrome.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < 4; i++)
                 chrome.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42F));
             chrome.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
@@ -147,8 +151,8 @@ namespace ChenmuBrowser
             {
                 Dock = DockStyle.Fill,
                 Margin = new Padding(5, 1, 5, 1),
-                Padding = new Padding(10, 3, 10, 3),
-                BackColor = Color.White,
+                Padding = new Padding(10, 8, 10, 8),
+                SurfaceColor = Color.White,
                 BorderColor = Color.FromArgb(220, 227, 235),
                 CornerRadius = 18
             };
@@ -175,7 +179,7 @@ namespace ChenmuBrowser
             _addressBox.BorderStyle = BorderStyle.None;
             _addressBox.Dock = DockStyle.Fill;
             _addressBox.MaxLength = 4096;
-            _addressBox.Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point);
+            _addressBox.Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Regular, GraphicsUnit.Point);
             _addressBox.KeyDown += AddressBox_KeyDown;
             SetCueBanner(_addressBox, "输入网址或搜索关键词");
             _toolTip.SetToolTip(_addressBox, "输入网址或搜索关键词；按 Ctrl+L 可快速定位到这里");
@@ -186,7 +190,7 @@ namespace ChenmuBrowser
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.White,
                 ForeColor = Color.FromArgb(132, 145, 159),
-                Font = new Font("Segoe UI", 13F, FontStyle.Regular, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 13F, FontStyle.Regular, GraphicsUnit.Point),
                 Margin = new Padding(0),
                 TabStop = false,
                 Cursor = Cursors.Hand,
@@ -226,7 +230,6 @@ namespace ChenmuBrowser
                 _blockTrackers = blockItem.Checked;
                 SavePreferences();
                 _statusLabel.Text = _blockTrackers ? "广告/跟踪域名拦截已开启" : "广告/跟踪域名拦截已关闭";
-                UpdatePrivacyIndicator();
             };
             settingsMenu.Items.Add(blockItem);
 
@@ -240,10 +243,10 @@ namespace ChenmuBrowser
                 _dataSaver = saverItem.Checked;
                 SavePreferences();
                 _statusLabel.Text = _dataSaver ? "省流模式已开启；刷新页面后生效" : "省流模式已关闭";
-                UpdatePrivacyIndicator();
             };
             settingsMenu.Items.Add(saverItem);
             settingsMenu.Items.Add(new ToolStripSeparator());
+            settingsMenu.Items.Add("下载管理…", null, delegate { ShowDownloadsDialog(); });
             settingsMenu.Items.Add("复制当前网址", null, delegate { CopyCurrentUrl(); });
             settingsMenu.Items.Add("清除浏览数据…", null, async (sender, args) => { await ClearBrowsingDataAsync(); });
             settingsMenu.Items.Add(new ToolStripSeparator());
@@ -254,8 +257,37 @@ namespace ChenmuBrowser
             {
                 settingsMenu.Show(settingsButton, new Point(0, settingsButton.Height));
             });
-            chrome.Controls.Add(settingsButton, 7, 0);
+            chrome.Controls.Add(CreateChromeButton("↓", "查看下载", ShowDownloadsDialog), 7, 0);
+            chrome.Controls.Add(settingsButton, 8, 0);
             _header.Controls.Add(chrome);
+
+            _tabStrip.Dock = DockStyle.Top;
+            _tabStrip.Height = 40;
+            _tabStrip.Padding = new Padding(7, 3, 7, 3);
+            _tabStrip.BackColor = Color.FromArgb(238, 242, 247);
+            _tabHeaders.Dock = DockStyle.Fill;
+            _tabHeaders.AutoScroll = true;
+            _tabHeaders.WrapContents = false;
+            _tabHeaders.FlowDirection = FlowDirection.LeftToRight;
+            _tabHeaders.Margin = Padding.Empty;
+            var newTabButton = new Button
+            {
+                Text = "+",
+                Dock = DockStyle.Right,
+                Width = 34,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(238, 242, 247),
+                ForeColor = Color.FromArgb(66, 82, 100),
+                Font = new Font("Segoe UI", 16F, FontStyle.Regular, GraphicsUnit.Point),
+                Cursor = Cursors.Hand,
+                TabStop = false
+            };
+            newTabButton.FlatAppearance.BorderSize = 0;
+            newTabButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(225, 232, 240);
+            newTabButton.Click += delegate { CreateNewTab(); FocusAddress(); };
+            _toolTip.SetToolTip(newTabButton, "新建标签页（Ctrl+T）");
+            _tabStrip.Controls.Add(_tabHeaders);
+            _tabStrip.Controls.Add(newTabButton);
 
             _viewport.Dock = DockStyle.Fill;
             _viewport.BackColor = Color.FromArgb(245, 248, 252);
@@ -275,16 +307,200 @@ namespace ChenmuBrowser
             _statusLabel.Text = "就绪";
             _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
             _statusLabel.ForeColor = Color.FromArgb(112, 124, 138);
-            _statusLabel.Font = new Font("Segoe UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point);
+            _statusLabel.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point);
             _statusPanel.Controls.Add(_statusLabel);
 
             Controls.Add(_viewport);
             Controls.Add(_statusPanel);
             Controls.Add(_header);
+            Controls.Add(_tabStrip);
+            CreateNewTab();
+        }
+
+        private void CreateNewTab()
+        {
+            var tab = new BrowserTab { Title = "新标签页", IsHome = true };
+            var header = new Panel
+            {
+                Width = 196,
+                Height = 32,
+                Margin = new Padding(2, 1, 4, 1),
+                BackColor = Color.FromArgb(230, 235, 242),
+                Tag = tab
+            };
+            header.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (var pen = new Pen(_activeTab == tab ? Color.FromArgb(215, 223, 233) : Color.FromArgb(225, 231, 239)))
+                    e.Graphics.DrawRectangle(pen, 0, 0, header.Width - 1, header.Height - 1);
+            };
+            var headerLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = new Padding(1),
+                BackColor = header.BackColor
+            };
+            headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28F));
+            headerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            var titleButton = new Button
+            {
+                Dock = DockStyle.Fill,
+                FlatStyle = FlatStyle.Flat,
+                Text = tab.Title,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
+                Padding = new Padding(7, 0, 3, 0),
+                BackColor = header.BackColor,
+                ForeColor = Color.FromArgb(52, 66, 82),
+                Cursor = Cursors.Hand,
+                TabStop = false
+            };
+            titleButton.FlatAppearance.BorderSize = 0;
+            titleButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(241, 245, 249);
+            titleButton.Click += delegate { SwitchToTab(tab); };
+            var closeButton = new Button
+            {
+                Dock = DockStyle.Fill,
+                FlatStyle = FlatStyle.Flat,
+                Text = "×",
+                Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point),
+                BackColor = header.BackColor,
+                ForeColor = Color.FromArgb(105, 117, 131),
+                Cursor = Cursors.Hand,
+                TabStop = false
+            };
+            closeButton.FlatAppearance.BorderSize = 0;
+            closeButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(226, 79, 79);
+            closeButton.FlatAppearance.MouseDownBackColor = Color.FromArgb(204, 58, 58);
+            closeButton.Click += delegate { CloseTab(tab); };
+            _toolTip.SetToolTip(closeButton, "关闭标签页");
+            headerLayout.Controls.Add(titleButton, 0, 0);
+            headerLayout.Controls.Add(closeButton, 1, 0);
+            header.Controls.Add(headerLayout);
+
+            tab.Header = header;
+            _tabs.Add(tab);
+            _tabHeaders.Controls.Add(header);
+            SwitchToTab(tab);
+            FocusAddress();
+        }
+
+        private void CloseTab(BrowserTab tab)
+        {
+            var index = _tabs.IndexOf(tab);
+            if (index < 0)
+                return;
+            var wasActive = tab == _activeTab;
+            _tabs.RemoveAt(index);
+            _tabHeaders.Controls.Remove(tab.Header);
+            if (tab.Header != null)
+                tab.Header.Dispose();
+            if (tab.WebView != null)
+            {
+                try { if (tab.WebView.CoreWebView2 != null) tab.WebView.CoreWebView2.Stop(); }
+                catch { }
+                _viewport.Controls.Remove(tab.WebView);
+                tab.WebView.Dispose();
+                tab.WebView = null;
+            }
+            if (_tabs.Count == 0)
+            {
+                _activeTab = null;
+                _webView = null;
+                CreateNewTab();
+                return;
+            }
+            if (wasActive)
+                SwitchToTab(_tabs[Math.Min(index, _tabs.Count - 1)]);
+            else
+                UpdateTabHeaders();
+        }
+
+        private void SwitchToTab(BrowserTab tab)
+        {
+            if (tab == null || !_tabs.Contains(tab))
+                return;
+            _activeTab = tab;
+            _webView = tab.WebView;
+            HideErrorView();
+            foreach (var item in _tabs)
+                if (item.WebView != null)
+                    item.WebView.Visible = false;
+
+            if (tab.IsHome || tab.WebView == null || tab.WebView.CoreWebView2 == null)
+            {
+                tab.IsHome = true;
+                _webView = tab.WebView;
+                _homeView.Visible = true;
+                _homeView.BringToFront();
+                _addressBox.Text = String.Empty;
+                _statusLabel.Text = "就绪";
+                Text = "新标签页 - CHENMU Browser";
+            }
+            else
+            {
+                _homeView.Visible = false;
+                tab.WebView.Visible = true;
+                tab.WebView.BringToFront();
+                _addressBox.Text = tab.WebView.CoreWebView2.Source ?? String.Empty;
+                UpdateWindowTitle(tab.WebView.CoreWebView2);
+            }
+            UpdateTabHeaders();
+            RefreshHomeBookmarks();
+        }
+
+        private void UpdateTabHeaders()
+        {
+            foreach (var tab in _tabs)
+            {
+                if (tab.Header == null || tab.Header.IsDisposed)
+                    continue;
+                var active = tab == _activeTab;
+                tab.Header.BackColor = active ? Color.White : Color.FromArgb(230, 235, 242);
+                var layout = tab.Header.Controls.Count == 0 ? null : tab.Header.Controls[0] as TableLayoutPanel;
+                if (layout == null)
+                    continue;
+                layout.BackColor = tab.Header.BackColor;
+                var titleButton = layout.GetControlFromPosition(0, 0) as Button;
+                var closeButton = layout.GetControlFromPosition(1, 0) as Button;
+                if (titleButton != null)
+                {
+                    titleButton.Text = tab.Title;
+                    titleButton.BackColor = tab.Header.BackColor;
+                    titleButton.ForeColor = active ? Color.FromArgb(35, 48, 63) : Color.FromArgb(75, 88, 103);
+                }
+                if (closeButton != null)
+                    closeButton.BackColor = tab.Header.BackColor;
+                tab.Header.Invalidate();
+            }
         }
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
+            if (keyData == (Keys.Control | Keys.T))
+            {
+                CreateNewTab();
+                FocusAddress();
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.W))
+            {
+                CloseTab(_activeTab);
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.Tab) || keyData == (Keys.Control | Keys.Shift | Keys.Tab))
+            {
+                if (_tabs.Count > 1 && _activeTab != null)
+                {
+                    var direction = (keyData & Keys.Shift) == Keys.Shift ? -1 : 1;
+                    var index = _tabs.IndexOf(_activeTab);
+                    SwitchToTab(_tabs[(index + direction + _tabs.Count) % _tabs.Count]);
+                }
+                return true;
+            }
             if (keyData == (Keys.Control | Keys.L))
             {
                 FocusAddress();
@@ -511,27 +727,29 @@ namespace ChenmuBrowser
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 5,
-                Padding = new Padding(44, 6, 44, 10),
+                RowCount = 4,
+                Padding = new Padding(32, 20, 32, 16),
                 BackColor = Color.Transparent
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 30F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 16F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 22F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 25F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 7F));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
             var hero = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ColumnCount = 1,
                 RowCount = 2,
-                BackColor = Color.Transparent
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 14)
             };
             hero.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            hero.RowStyles.Add(new RowStyle(SizeType.Percent, 60F));
-            hero.RowStyles.Add(new RowStyle(SizeType.Percent, 40F));
+            hero.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            hero.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             var brandRow = new FlowLayoutPanel
             {
                 AutoSize = true,
@@ -547,9 +765,9 @@ namespace ChenmuBrowser
             {
                 Image = LoadBrandMark(),
                 SizeMode = PictureBoxSizeMode.Zoom,
-                Size = new Size(58, 58),
+                Size = new Size(46, 46),
                 BackColor = Color.Transparent,
-                Margin = new Padding(0, 0, 12, 0)
+                Margin = new Padding(0, 0, 10, 0)
             };
             if (brandLogo.Image == null)
                 brandLogo.Visible = false;
@@ -558,19 +776,21 @@ namespace ChenmuBrowser
                 Text = "CHENMU Browser",
                 AutoSize = true,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Font = new Font("Segoe UI", 31F, FontStyle.Bold, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 27F, FontStyle.Bold, GraphicsUnit.Point),
                 ForeColor = Color.FromArgb(35, 55, 75),
-                Margin = new Padding(0, 3, 0, 0)
+                Margin = new Padding(0, 1, 0, 0)
             };
             brandRow.Controls.Add(brandLogo);
             brandRow.Controls.Add(title);
             var hint = new Label
             {
                 Text = "简约、轻快、安心地浏览",
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.TopCenter,
-                Font = new Font("Segoe UI", 11F, FontStyle.Regular, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(112, 126, 143)
+                AutoSize = true,
+                Anchor = AnchorStyles.None,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Regular, GraphicsUnit.Point),
+                ForeColor = Color.FromArgb(112, 126, 143),
+                Margin = new Padding(0, 3, 0, 0)
             };
             hero.Controls.Add(brandRow, 0, 0);
             hero.Controls.Add(hint, 0, 1);
@@ -578,14 +798,14 @@ namespace ChenmuBrowser
 
             var searchFrame = new RoundedPanel
             {
-                Width = 720,
-                Height = 58,
+                Width = 760,
+                Height = 64,
                 Anchor = AnchorStyles.None,
-                Margin = new Padding(0),
-                Padding = new Padding(4),
-                BackColor = Color.White,
-                BorderColor = Color.FromArgb(222, 229, 237),
-                CornerRadius = 20
+                Margin = new Padding(0, 0, 0, 14),
+                Padding = new Padding(10),
+                SurfaceColor = Color.White,
+                BorderColor = Color.FromArgb(218, 228, 239),
+                CornerRadius = 19
             };
             var searchLayout = new TableLayoutPanel
             {
@@ -593,12 +813,12 @@ namespace ChenmuBrowser
                 ColumnCount = 4,
                 RowCount = 1,
                 BackColor = Color.White,
-                Padding = new Padding(4, 2, 4, 2)
+                Padding = new Padding(3, 1, 3, 1)
             };
-            searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120F));
+            searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 116F));
             searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32F));
-            searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82F));
+            searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30F));
+            searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86F));
             searchLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             _homeSearchEngineButton = new Button
             {
@@ -607,7 +827,7 @@ namespace ChenmuBrowser
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.White,
                 ForeColor = Color.FromArgb(52, 103, 170),
-                Font = new Font("Segoe UI", 10F, FontStyle.Bold, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold, GraphicsUnit.Point),
                 Margin = new Padding(2),
                 Cursor = Cursors.Hand
             };
@@ -626,9 +846,9 @@ namespace ChenmuBrowser
             {
                 BorderStyle = BorderStyle.None,
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Regular, GraphicsUnit.Point),
                 ForeColor = Color.FromArgb(48, 58, 70),
-                Margin = new Padding(5, 8, 4, 4)
+                Margin = new Padding(5, 6, 4, 4)
             };
             SetCueBanner(_homeSearchBox, "搜索网页，或直接输入网址");
             _homeSearchBox.KeyDown += delegate(object sender, KeyEventArgs e)
@@ -646,7 +866,7 @@ namespace ChenmuBrowser
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.White,
                 ForeColor = Color.FromArgb(132, 145, 159),
-                Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Regular, GraphicsUnit.Point),
                 Margin = new Padding(0),
                 TabStop = false,
                 Cursor = Cursors.Hand,
@@ -658,24 +878,24 @@ namespace ChenmuBrowser
             homeSearchClearButton.Click += delegate { _homeSearchBox.Clear(); _homeSearchBox.Focus(); };
             _homeSearchBox.TextChanged += delegate { homeSearchClearButton.Visible = _homeSearchBox.TextLength > 0; };
             _homeSearchBox.Enter += delegate { searchFrame.BorderColor = Color.FromArgb(76, 139, 214); };
-            _homeSearchBox.Leave += delegate { searchFrame.BorderColor = Color.FromArgb(222, 229, 237); };
+            _homeSearchBox.Leave += delegate { searchFrame.BorderColor = Color.FromArgb(218, 228, 239); };
             _toolTip.SetToolTip(homeSearchClearButton, "清空搜索内容");
             var searchButton = new RoundedButton
             {
                 Text = "搜索",
                 Dock = DockStyle.Fill,
                 Margin = new Padding(2),
-                CornerRadius = 16,
-                BackColor = Color.FromArgb(48, 112, 190),
+                CornerRadius = 15,
+                BackColor = Color.FromArgb(49, 112, 189),
                 ForeColor = Color.White,
-                Font = new Font("Segoe UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand,
                 TabStop = false,
                 AccessibleName = "搜索"
             };
             searchButton.FlatAppearance.BorderSize = 0;
-            searchButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(37, 96, 168);
+            searchButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(39, 97, 168);
             searchButton.Click += async delegate { await NavigateAsync(_homeSearchBox.Text); };
             searchLayout.Controls.Add(_homeSearchEngineButton, 0, 0);
             searchLayout.Controls.Add(_homeSearchBox, 1, 0);
@@ -688,10 +908,11 @@ namespace ChenmuBrowser
             {
                 Anchor = AnchorStyles.None,
                 AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 BackColor = Color.Transparent,
-                Margin = new Padding(0)
+                Margin = new Padding(0, 0, 0, 14)
             };
             shortcuts.Controls.Add(CreateShortcutCard("G", "Google", Color.FromArgb(66, 133, 244), delegate { NavigateFromPage("https://www.google.com/"); }));
             shortcuts.Controls.Add(CreateShortcutCard("b", "Bing", Color.FromArgb(0, 120, 212), delegate { NavigateFromPage("https://www.bing.com/"); }));
@@ -699,23 +920,36 @@ namespace ChenmuBrowser
             shortcuts.Controls.Add(CreateShortcutCard("☆", "书签", Color.FromArgb(117, 97, 193), ShowBookmarksDialog));
             layout.Controls.Add(shortcuts, 0, 2);
 
+            var bookmarksContainer = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0)
+            };
+            bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12F));
+            bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 76F));
+            bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12F));
+            bookmarksContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             var bookmarkArea = new RoundedPanel
             {
                 Dock = DockStyle.Fill,
-                BackColor = Color.White,
-                BorderColor = Color.FromArgb(230, 235, 241),
-                CornerRadius = 18,
-                Padding = new Padding(20, 12, 20, 12),
-                Margin = new Padding(60, 4, 60, 4)
+                SurfaceColor = Color.White,
+                BorderColor = Color.FromArgb(228, 234, 241),
+                CornerRadius = 17,
+                Padding = new Padding(18, 10, 18, 10),
+                Margin = new Padding(0, 2, 0, 2)
             };
             var bookmarkHeading = new Label
             {
                 Text = "常用收藏",
                 Dock = DockStyle.Top,
                 Height = 30,
-                Font = new Font("Segoe UI", 10F, FontStyle.Bold, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(70, 83, 99),
-                BackColor = Color.White
+                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold, GraphicsUnit.Point),
+                ForeColor = Color.FromArgb(60, 76, 95),
+                BackColor = Color.White,
+                TextAlign = ContentAlignment.MiddleLeft
             };
             _homeBookmarks = new FlowLayoutPanel
             {
@@ -723,25 +957,16 @@ namespace ChenmuBrowser
                 AutoScroll = true,
                 WrapContents = true,
                 FlowDirection = FlowDirection.LeftToRight,
-                Padding = new Padding(0, 8, 0, 0),
+                Padding = new Padding(0, 6, 0, 0),
                 BackColor = Color.White
             };
             bookmarkArea.Controls.Add(_homeBookmarks);
             bookmarkArea.Controls.Add(bookmarkHeading);
-            layout.Controls.Add(bookmarkArea, 0, 3);
+            bookmarksContainer.Controls.Add(bookmarkArea, 1, 0);
+            layout.Controls.Add(bookmarksContainer, 0, 3);
 
-            _privacyLabel = new Label
-            {
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Segoe UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(104, 119, 136),
-                BackColor = Color.Transparent
-            };
-            layout.Controls.Add(_privacyLabel, 0, 4);
             panel.Controls.Add(layout);
             RefreshHomeBookmarks();
-            UpdatePrivacyIndicator();
             return panel;
         }
 
@@ -749,22 +974,23 @@ namespace ChenmuBrowser
         {
             var card = new RoundedPanel
             {
-                Width = 112,
-                Height = 94,
-                Margin = new Padding(9, 4, 9, 4),
-                BackColor = Color.White,
-                BorderColor = Color.FromArgb(226, 232, 239),
-                CornerRadius = 16,
+                Width = 104,
+                Height = 84,
+                Margin = new Padding(6, 3, 6, 3),
+                Padding = new Padding(4),
+                SurfaceColor = Color.White,
+                BorderColor = Color.FromArgb(226, 233, 241),
+                CornerRadius = 15,
                 Cursor = Cursors.Hand
             };
             var badge = new RoundedPanel
             {
-                Width = 38,
-                Height = 38,
-                CornerRadius = 19,
-                BackColor = accent,
+                Width = 34,
+                Height = 34,
+                CornerRadius = 17,
+                SurfaceColor = accent,
                 BorderColor = Color.Transparent,
-                Location = new Point((card.Width - 38) / 2, 12),
+                Location = new Point((card.Width - 34) / 2, 8),
                 Cursor = Cursors.Hand
             };
             var glyphLabel = new Label
@@ -772,7 +998,7 @@ namespace ChenmuBrowser
                 Text = glyph,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Segoe UI", 12F, FontStyle.Bold, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold, GraphicsUnit.Point),
                 ForeColor = Color.White,
                 BackColor = Color.Transparent,
                 Cursor = Cursors.Hand
@@ -782,29 +1008,28 @@ namespace ChenmuBrowser
             {
                 Text = title,
                 Dock = DockStyle.Bottom,
-                Height = 25,
+                Height = 24,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(65, 78, 94),
-                BackColor = Color.White,
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point),
+                ForeColor = Color.FromArgb(62, 77, 94),
+                BackColor = Color.Transparent,
+                Margin = new Padding(0),
                 Cursor = Cursors.Hand
             };
             card.Controls.Add(titleLabel);
             card.Controls.Add(badge);
             card.MouseEnter += delegate
             {
-                card.BackColor = Color.FromArgb(248, 251, 255);
-                card.BorderColor = Color.FromArgb(173, 201, 231);
-                titleLabel.BackColor = card.BackColor;
+                card.SurfaceColor = Color.FromArgb(244, 248, 253);
+                card.BorderColor = Color.FromArgb(184, 207, 232);
             };
             card.MouseLeave += delegate
             {
                 var point = card.PointToClient(Cursor.Position);
                 if (card.ClientRectangle.Contains(point))
                     return;
-                card.BackColor = Color.White;
-                card.BorderColor = Color.FromArgb(226, 232, 239);
-                titleLabel.BackColor = Color.White;
+                card.SurfaceColor = Color.White;
+                card.BorderColor = Color.FromArgb(226, 233, 241);
             };
             card.Click += delegate { action(); };
             badge.Click += delegate { action(); };
@@ -821,15 +1046,6 @@ namespace ChenmuBrowser
                 _homeSearchEngineButton.Text = (_searchEngine == "google" ? "Google" : "Bing") + " ▾";
             SavePreferences();
             _statusLabel.Text = "默认搜索引擎：" + (_searchEngine == "google" ? "Google" : "Bing");
-        }
-
-        private void UpdatePrivacyIndicator()
-        {
-            if (_privacyLabel == null)
-                return;
-            var trackerText = _blockTrackers ? "跟踪拦截开启" : "跟踪拦截关闭";
-            var saverText = _dataSaver ? "省流模式开启" : "省流模式关闭";
-            _privacyLabel.Text = "Ctrl+L 地址栏  ·  Ctrl+D 收藏  ·  HTTPS 优先    " + trackerText + "    " + saverText + "    密码保存关闭";
         }
 
         private async void SearchFromHome()
@@ -852,7 +1068,7 @@ namespace ChenmuBrowser
                     Height = 62,
                     Margin = new Padding(0, 4, 0, 0),
                     Padding = new Padding(10, 6, 10, 6),
-                    BackColor = Color.FromArgb(248, 250, 253),
+                    SurfaceColor = Color.FromArgb(248, 250, 253),
                     BorderColor = Color.FromArgb(231, 236, 243),
                     CornerRadius = 14
                 };
@@ -881,7 +1097,7 @@ namespace ChenmuBrowser
                     Text = "收藏常用网页",
                     Dock = DockStyle.Fill,
                     TextAlign = ContentAlignment.BottomLeft,
-                    Font = new Font("Segoe UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
+                    Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
                     ForeColor = Color.FromArgb(70, 83, 99),
                     BackColor = Color.Transparent
                 }, 0, 0);
@@ -890,7 +1106,7 @@ namespace ChenmuBrowser
                     Text = "收藏后会显示在这里；按 Ctrl+D 可快速保存当前页面。",
                     Dock = DockStyle.Fill,
                     TextAlign = ContentAlignment.TopLeft,
-                    Font = new Font("Segoe UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point),
+                    Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point),
                     ForeColor = Color.FromArgb(126, 139, 153),
                     BackColor = Color.Transparent
                 }, 0, 1);
@@ -912,7 +1128,7 @@ namespace ChenmuBrowser
                 Height = 58,
                 Margin = new Padding(0, 4, 10, 4),
                 Padding = new Padding(6, 4, 6, 4),
-                BackColor = Color.FromArgb(249, 251, 254),
+                SurfaceColor = Color.FromArgb(249, 251, 254),
                 BorderColor = Color.FromArgb(230, 236, 243),
                 CornerRadius = 13,
                 Cursor = Cursors.Hand
@@ -946,7 +1162,7 @@ namespace ChenmuBrowser
                 Text = bookmark.Title,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.BottomLeft,
-                Font = new Font("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold, GraphicsUnit.Point),
                 ForeColor = Color.FromArgb(54, 69, 85),
                 BackColor = Color.Transparent,
                 AutoEllipsis = true,
@@ -957,7 +1173,7 @@ namespace ChenmuBrowser
                 Text = GetBookmarkHost(bookmark.Url),
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.TopLeft,
-                Font = new Font("Segoe UI", 8F, FontStyle.Regular, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 8F, FontStyle.Regular, GraphicsUnit.Point),
                 ForeColor = Color.FromArgb(129, 143, 158),
                 BackColor = Color.Transparent,
                 Cursor = Cursors.Hand
@@ -973,7 +1189,7 @@ namespace ChenmuBrowser
             host.Click += openBookmark;
             tile.MouseEnter += delegate
             {
-                tile.BackColor = Color.FromArgb(243, 248, 254);
+                tile.SurfaceColor = Color.FromArgb(243, 248, 254);
                 tile.BorderColor = Color.FromArgb(174, 203, 232);
             };
             tile.MouseLeave += delegate
@@ -981,7 +1197,7 @@ namespace ChenmuBrowser
                 var point = tile.PointToClient(Cursor.Position);
                 if (tile.ClientRectangle.Contains(point))
                     return;
-                tile.BackColor = Color.FromArgb(249, 251, 254);
+                tile.SurfaceColor = Color.FromArgb(249, 251, 254);
                 tile.BorderColor = Color.FromArgb(230, 236, 243);
             };
             _toolTip.SetToolTip(tile, bookmark.Url);
@@ -1033,71 +1249,107 @@ namespace ChenmuBrowser
             if (String.IsNullOrWhiteSpace(target))
                 return;
 
-            _addressBox.Text = target;
+            if (_activeTab == null)
+                CreateNewTab();
+            var tab = _activeTab;
             try
             {
-                await EnsureWebViewAsync();
+                await EnsureWebViewAsync(tab);
             }
             catch (Exception ex)
             {
-                ShowRuntimeProblem(ex, target);
+                ShowRuntimeProblem(tab, ex, target);
                 return;
             }
 
-            if (IsDisposed || _webView == null || _webView.CoreWebView2 == null)
+            if (IsDisposed || !_tabs.Contains(tab) || tab.WebView == null || tab.WebView.CoreWebView2 == null)
                 return;
 
-            HideErrorView();
-            _homeView.Visible = false;
-            _webView.Visible = true;
-            _webView.BringToFront();
-            _statusLabel.Text = "正在打开页面…";
-            try
+            tab.IsHome = false;
+            if (tab == _activeTab)
             {
-                _webView.CoreWebView2.Navigate(target);
-            }
-            catch (Exception ex)
-            {
-                _statusLabel.Text = "无法打开页面：" + ex.Message;
-            }
-        }
-
-        private Task EnsureWebViewAsync()
-        {
-            if (_webView != null && _webView.CoreWebView2 != null)
-                return Task.CompletedTask;
-            if (_initializationTask == null)
-                _initializationTask = InitializeWebViewAsync();
-            return _initializationTask;
-        }
-
-        private async Task InitializeWebViewAsync()
-        {
-            try
-            {
-                Directory.CreateDirectory(_dataRoot);
-                var userDataFolder = Path.Combine(_dataRoot, "WebView2");
-                _webView = new WebView2 { Dock = DockStyle.Fill, Visible = false };
-                _viewport.Controls.Add(_webView);
+                _webView = tab.WebView;
+                HideErrorView();
+                _homeView.Visible = false;
+                _webView.Visible = true;
                 _webView.BringToFront();
+                _addressBox.Text = target;
+                _statusLabel.Text = "正在打开页面…";
+            }
+            try
+            {
+                tab.WebView.CoreWebView2.Navigate(target);
+                UpdateTabHeaders();
+            }
+            catch (Exception ex)
+            {
+                if (tab == _activeTab)
+                    _statusLabel.Text = "无法打开页面：" + ex.Message;
+            }
+        }
 
-                var environment = await CoreWebView2Environment.CreateAsync(null, userDataFolder, null);
-                await _webView.EnsureCoreWebView2Async(environment);
-                ConfigureCoreWebView(_webView.CoreWebView2);
+        private Task EnsureWebViewAsync(BrowserTab tab)
+        {
+            if (tab == null)
+                return Task.CompletedTask;
+            if (tab.WebView != null && tab.WebView.CoreWebView2 != null)
+                return Task.CompletedTask;
+            if (tab.InitializationTask == null || tab.InitializationTask.IsFaulted || tab.InitializationTask.IsCanceled)
+                tab.InitializationTask = InitializeWebViewAsync(tab);
+            return tab.InitializationTask;
+        }
+
+        private async Task InitializeWebViewAsync(BrowserTab tab)
+        {
+            WebView2 webView = null;
+            try
+            {
+                webView = new WebView2 { Dock = DockStyle.Fill, Visible = false };
+                tab.WebView = webView;
+                _viewport.Controls.Add(webView);
+                var environment = await GetWebViewEnvironmentAsync();
+                if (IsDisposed || Disposing || !_tabs.Contains(tab))
+                    throw new OperationCanceledException("标签页已关闭。");
+                await webView.EnsureCoreWebView2Async(environment);
+                ConfigureCoreWebView(webView.CoreWebView2);
+                if (tab == _activeTab)
+                    _webView = webView;
             }
             catch
             {
-                if (_webView != null)
+                if (webView != null)
                 {
-                    _viewport.Controls.Remove(_webView);
-                    _webView.Dispose();
-                    _webView = null;
+                    _viewport.Controls.Remove(webView);
+                    webView.Dispose();
                 }
+                if (tab.WebView == webView)
+                    tab.WebView = null;
+                if (tab == _activeTab)
+                    _webView = null;
                 throw;
             }
             finally
             {
-                _initializationTask = null;
+                tab.InitializationTask = null;
+            }
+        }
+
+        private async Task<CoreWebView2Environment> GetWebViewEnvironmentAsync()
+        {
+            if (_webViewEnvironmentTask == null)
+            {
+                Directory.CreateDirectory(_dataRoot);
+                var userDataFolder = Path.Combine(_dataRoot, "WebView2");
+                _webViewEnvironmentTask = CoreWebView2Environment.CreateAsync(null, userDataFolder, null);
+            }
+            try
+            {
+                return await _webViewEnvironmentTask;
+            }
+            catch
+            {
+                _webViewEnvironmentTask = null;
+                throw;
             }
         }
 
@@ -1110,31 +1362,121 @@ namespace ChenmuBrowser
             core.Profile.PreferredTrackingPreventionLevel = CoreWebView2TrackingPreventionLevel.Balanced;
             core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             core.WebResourceRequested += Core_WebResourceRequested;
+            core.DownloadStarting += Core_DownloadStarting;
             core.NavigationStarting += Core_NavigationStarting;
             core.SourceChanged += delegate
             {
-                if (core.Source != null)
+                if (IsActiveCore(core) && core.Source != null)
                     _addressBox.Text = core.Source;
             };
             core.NavigationCompleted += delegate(object sender, CoreWebView2NavigationCompletedEventArgs e)
             {
-                _statusLabel.Text = e.IsSuccess ? "完成" : "页面加载失败；可检查网址或网络连接。";
+                if (IsActiveCore(core))
+                    _statusLabel.Text = e.IsSuccess ? "完成" : "页面加载失败；可检查网址或网络连接。";
                 UpdateWindowTitle(core);
             };
             core.DocumentTitleChanged += delegate { UpdateWindowTitle(core); };
             core.NewWindowRequested += delegate(object sender, CoreWebView2NewWindowRequestedEventArgs e)
             {
                 e.Handled = true;
-                NavigateFromPage(e.Uri);
+                OpenNewTabFromPage(e.Uri);
             };
             core.ProcessFailed += delegate
             {
-                _statusLabel.Text = "网页内核遇到问题，可尝试刷新页面。";
+                if (IsActiveCore(core))
+                    _statusLabel.Text = "网页内核遇到问题，可尝试刷新页面。";
             };
+        }
+
+        private bool IsActiveCore(CoreWebView2 core)
+        {
+            return core != null && _activeTab != null && _activeTab.WebView != null &&
+                _activeTab.WebView.CoreWebView2 == core;
+        }
+
+        private async void OpenNewTabFromPage(string url)
+        {
+            CreateNewTab();
+            if (!String.IsNullOrWhiteSpace(url))
+                await NavigateAsync(url);
+        }
+
+        private void Core_DownloadStarting(object sender, CoreWebView2DownloadStartingEventArgs e)
+        {
+            try
+            {
+                var core = sender as CoreWebView2;
+                var downloadsDirectory = core == null ? String.Empty : core.Profile.DefaultDownloadFolderPath;
+                if (String.IsNullOrWhiteSpace(downloadsDirectory))
+                    downloadsDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+
+                var fileName = Path.GetFileName(e.ResultFilePath);
+                if (String.IsNullOrWhiteSpace(fileName))
+                    fileName = "download";
+                var resultPath = GetUniqueDownloadPath(downloadsDirectory, fileName);
+                e.ResultFilePath = resultPath;
+
+                var ownerTab = _tabs.FirstOrDefault(tab => tab.WebView != null && tab.WebView.CoreWebView2 == core);
+                var entry = new DownloadEntry { Operation = e.DownloadOperation, FilePath = resultPath, Owner = ownerTab };
+                _downloads.Insert(0, entry);
+                e.Handled = true;
+                if (ownerTab == _activeTab)
+                    _statusLabel.Text = "正在下载：" + Path.GetFileName(resultPath);
+                entry.Operation.StateChanged += (downloadSender, args) =>
+                {
+                    if (IsDisposed || Disposing || !IsHandleCreated)
+                        return;
+                    try
+                    {
+                        BeginInvoke((Action)delegate
+                        {
+                            if (IsDisposed || Disposing)
+                                return;
+                            if (entry.Owner != _activeTab)
+                                return;
+                            if (entry.Operation.State == CoreWebView2DownloadState.Completed)
+                                _statusLabel.Text = "下载完成：" + Path.GetFileName(entry.FilePath);
+                            else if (entry.Operation.State == CoreWebView2DownloadState.Interrupted)
+                                _statusLabel.Text = entry.Operation.InterruptReason == CoreWebView2DownloadInterruptReason.UserCanceled
+                                    ? "下载已取消：" + Path.GetFileName(entry.FilePath)
+                                    : "下载已中断：" + Path.GetFileName(entry.FilePath);
+                        });
+                    }
+                    catch { }
+                };
+            }
+            catch (Exception ex)
+            {
+                e.Cancel = true;
+                if (!IsDisposed && !Disposing && IsActiveCore(sender as CoreWebView2))
+                    _statusLabel.Text = "无法开始下载：" + ex.Message;
+            }
+        }
+
+        private string GetUniqueDownloadPath(string directory, string fileName)
+        {
+            Directory.CreateDirectory(directory);
+            foreach (var invalidChar in Path.GetInvalidFileNameChars())
+                fileName = fileName.Replace(invalidChar, '_');
+            if (String.IsNullOrWhiteSpace(fileName) || fileName == "." || fileName == "..")
+                fileName = "download";
+
+            var name = Path.GetFileNameWithoutExtension(fileName);
+            var extension = Path.GetExtension(fileName);
+            var candidate = Path.Combine(directory, fileName);
+            var suffix = 1;
+            while (File.Exists(candidate) || _downloads.Any(item =>
+                String.Equals(item.FilePath, candidate, StringComparison.OrdinalIgnoreCase)))
+            {
+                candidate = Path.Combine(directory, name + " (" + suffix.ToString(CultureInfo.InvariantCulture) + ")" + extension);
+                suffix++;
+            }
+            return candidate;
         }
 
         private void Core_NavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
         {
+            var core = sender as CoreWebView2;
             Uri uri;
             if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out uri))
                 return;
@@ -1143,8 +1485,10 @@ namespace ChenmuBrowser
             {
                 e.Cancel = true;
                 var secureUrl = "https:" + e.Uri.Substring("http:".Length);
-                _addressBox.Text = secureUrl;
-                _webView.CoreWebView2.Navigate(secureUrl);
+                if (IsActiveCore(core))
+                    _addressBox.Text = secureUrl;
+                if (core != null)
+                    core.Navigate(secureUrl);
                 return;
             }
 
@@ -1158,7 +1502,8 @@ namespace ChenmuBrowser
             }
             catch (Exception ex)
             {
-                _statusLabel.Text = "无法打开外部链接：" + ex.Message;
+                if (IsActiveCore(core))
+                    _statusLabel.Text = "无法打开外部链接：" + ex.Message;
             }
         }
 
@@ -1174,7 +1519,7 @@ namespace ChenmuBrowser
 
             if (shouldBlock)
             {
-                var core = _webView == null ? null : _webView.CoreWebView2;
+                var core = sender as CoreWebView2;
                 if (core != null)
                     e.Response = core.Environment.CreateWebResourceResponse(null, 204, "Blocked", "Content-Length: 0\r\n");
             }
@@ -1204,15 +1549,11 @@ namespace ChenmuBrowser
 
         private void ShowHomeView()
         {
-            HideErrorView();
-            if (_webView != null)
-                _webView.Visible = false;
-            _homeView.Visible = true;
-            _homeView.BringToFront();
-            _addressBox.Text = String.Empty;
-            _statusLabel.Text = "就绪";
-            Text = "CHENMU Browser";
-            RefreshHomeBookmarks();
+            if (_activeTab == null)
+                CreateNewTab();
+            _activeTab.IsHome = true;
+            _activeTab.Title = "新标签页";
+            SwitchToTab(_activeTab);
         }
 
         private void AddCurrentBookmark()
@@ -1295,6 +1636,206 @@ namespace ChenmuBrowser
             dialog.ShowDialog(this);
         }
 
+        private void ShowDownloadsDialog()
+        {
+            var dialog = new Form
+            {
+                Text = "下载管理",
+                StartPosition = FormStartPosition.CenterParent,
+                Size = new Size(760, 430),
+                MinimumSize = new Size(580, 340),
+                FormBorderStyle = FormBorderStyle.Sizable,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                AutoScaleMode = AutoScaleMode.Dpi,
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point)
+            };
+
+            var list = new ListView
+            {
+                Dock = DockStyle.Fill,
+                View = View.Details,
+                FullRowSelect = true,
+                GridLines = true,
+                HideSelection = false,
+                MultiSelect = false,
+                Font = dialog.Font
+            };
+            list.Columns.Add("文件名", 300, HorizontalAlignment.Left);
+            list.Columns.Add("状态", 125, HorizontalAlignment.Left);
+            list.Columns.Add("进度", 210, HorizontalAlignment.Left);
+
+            var buttons = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 52,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(8),
+                WrapContents = false
+            };
+            var closeButton = new Button { Text = "关闭", Width = 78, Height = 30, DialogResult = DialogResult.Cancel };
+            var clearButton = new Button { Text = "清理记录", Width = 90, Height = 30 };
+            var folderButton = new Button { Text = "打开文件夹", Width = 104, Height = 30, Enabled = false };
+            var cancelButton = new Button { Text = "取消下载", Width = 90, Height = 30, Enabled = false };
+            var openButton = new Button { Text = "打开文件", Width = 84, Height = 30, Enabled = false };
+            buttons.Controls.Add(closeButton);
+            buttons.Controls.Add(clearButton);
+            buttons.Controls.Add(folderButton);
+            buttons.Controls.Add(cancelButton);
+            buttons.Controls.Add(openButton);
+            dialog.Controls.Add(list);
+            dialog.Controls.Add(buttons);
+            dialog.CancelButton = closeButton;
+
+            Action refresh = delegate
+            {
+                RefreshDownloadList(list);
+                UpdateDownloadManagerButtons(list, openButton, folderButton, cancelButton, clearButton);
+            };
+            list.SelectedIndexChanged += delegate { UpdateDownloadManagerButtons(list, openButton, folderButton, cancelButton, clearButton); };
+            list.DoubleClick += delegate { OpenSelectedDownload(list); };
+            openButton.Click += delegate { OpenSelectedDownload(list); };
+            folderButton.Click += delegate { OpenSelectedDownloadFolder(list); };
+            cancelButton.Click += delegate
+            {
+                var entry = GetSelectedDownload(list);
+                if (entry == null || entry.Operation.State != CoreWebView2DownloadState.InProgress)
+                    return;
+                try { entry.Operation.Cancel(); }
+                catch (Exception ex) { MessageBox.Show(dialog, "无法取消下载：" + ex.Message, "下载管理", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+                refresh();
+            };
+            clearButton.Click += delegate
+            {
+                _downloads.RemoveAll(entry => entry.Operation.State != CoreWebView2DownloadState.InProgress);
+                refresh();
+            };
+
+            var timer = new System.Windows.Forms.Timer { Interval = 700 };
+            timer.Tick += delegate { refresh(); };
+            dialog.FormClosed += delegate
+            {
+                timer.Stop();
+                timer.Dispose();
+            };
+            refresh();
+            timer.Start();
+            dialog.ShowDialog(this);
+        }
+
+        private void RefreshDownloadList(ListView list)
+        {
+            var selectedEntry = GetSelectedDownload(list);
+            list.BeginUpdate();
+            try
+            {
+                list.Items.Clear();
+                foreach (var entry in _downloads)
+                {
+                    var item = new ListViewItem(Path.GetFileName(entry.FilePath));
+                    item.SubItems.Add(GetDownloadStatusText(entry));
+                    item.SubItems.Add(GetDownloadProgressText(entry));
+                    item.ToolTipText = entry.FilePath;
+                    item.Tag = entry;
+                    list.Items.Add(item);
+                    if (selectedEntry != null && String.Equals(selectedEntry.FilePath, entry.FilePath, StringComparison.OrdinalIgnoreCase))
+                        item.Selected = true;
+                }
+            }
+            finally
+            {
+                list.EndUpdate();
+            }
+        }
+
+        private void UpdateDownloadManagerButtons(ListView list, Button openButton, Button folderButton,
+            Button cancelButton, Button clearButton)
+        {
+            var entry = GetSelectedDownload(list);
+            var inProgress = entry != null && entry.Operation.State == CoreWebView2DownloadState.InProgress;
+            openButton.Enabled = entry != null && entry.Operation.State == CoreWebView2DownloadState.Completed && File.Exists(entry.FilePath);
+            folderButton.Enabled = entry != null && Directory.Exists(Path.GetDirectoryName(entry.FilePath));
+            cancelButton.Enabled = inProgress;
+            clearButton.Enabled = _downloads.Any(item => item.Operation.State != CoreWebView2DownloadState.InProgress);
+        }
+
+        private static DownloadEntry GetSelectedDownload(ListView list)
+        {
+            return list.SelectedItems.Count == 0 ? null : list.SelectedItems[0].Tag as DownloadEntry;
+        }
+
+        private static string GetDownloadStatusText(DownloadEntry entry)
+        {
+            if (entry == null || entry.Operation == null)
+                return "未知";
+            if (entry.Operation.State == CoreWebView2DownloadState.InProgress)
+                return "下载中";
+            if (entry.Operation.State == CoreWebView2DownloadState.Completed)
+                return "已完成";
+            return entry.Operation.InterruptReason == CoreWebView2DownloadInterruptReason.UserCanceled
+                ? "已取消"
+                : "已中断";
+        }
+
+        private static string GetDownloadProgressText(DownloadEntry entry)
+        {
+            var received = (ulong)Math.Max(0L, entry.Operation.BytesReceived);
+            var total = entry.Operation.TotalBytesToReceive.GetValueOrDefault();
+            if (total > 0)
+            {
+                var percentage = (int)Math.Min(100.0, received * 100.0 / total);
+                return FormatDownloadSize(received) + " / " + FormatDownloadSize(total) + "  " + percentage.ToString(CultureInfo.InvariantCulture) + "%";
+            }
+            return FormatDownloadSize(received);
+        }
+
+        private static string FormatDownloadSize(ulong bytes)
+        {
+            var size = (double)bytes;
+            var unit = 0;
+            var units = new[] { "B", "KB", "MB", "GB" };
+            while (size >= 1024 && unit < units.Length - 1)
+            {
+                size /= 1024;
+                unit++;
+            }
+            return size.ToString(unit == 0 ? "0" : "0.#", CultureInfo.CurrentCulture) + " " + units[unit];
+        }
+
+        private void OpenSelectedDownload(ListView list)
+        {
+            var entry = GetSelectedDownload(list);
+            if (entry == null || entry.Operation.State != CoreWebView2DownloadState.Completed || !File.Exists(entry.FilePath))
+                return;
+            try
+            {
+                Process.Start(new ProcessStartInfo { FileName = entry.FilePath, UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "无法打开文件：" + ex.Message, "下载管理", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void OpenSelectedDownloadFolder(ListView list)
+        {
+            var entry = GetSelectedDownload(list);
+            if (entry == null)
+                return;
+            try
+            {
+                var folder = Path.GetDirectoryName(entry.FilePath);
+                if (File.Exists(entry.FilePath))
+                    Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + entry.FilePath + "\"") { UseShellExecute = true });
+                else
+                    Process.Start(new ProcessStartInfo("explorer.exe", "\"" + folder + "\"") { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "无法打开下载文件夹：" + ex.Message, "下载管理", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
         private async Task NavigateSelectedBookmarkAsync(ListBox list, Form dialog)
         {
             var selected = list.SelectedItem as BookmarkItem;
@@ -1315,10 +1856,12 @@ namespace ChenmuBrowser
 
             try
             {
-                if (_webView != null && _webView.CoreWebView2 != null)
+                var core = _tabs.Select(tab => tab.WebView == null ? null : tab.WebView.CoreWebView2)
+                    .FirstOrDefault(item => item != null);
+                if (core != null)
                 {
-                    await _webView.CoreWebView2.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllProfile);
-                    _webView.CoreWebView2.CookieManager.DeleteAllCookies();
+                    await core.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllProfile);
+                    core.CookieManager.DeleteAllCookies();
                 }
                 _statusLabel.Text = "浏览数据已清除。";
             }
@@ -1341,20 +1884,37 @@ namespace ChenmuBrowser
 
         private void UpdateWindowTitle(CoreWebView2 core)
         {
+            var tab = _tabs.FirstOrDefault(item => item.WebView != null && item.WebView.CoreWebView2 == core);
+            if (tab == null)
+                return;
             var title = core.DocumentTitle;
-            Text = String.IsNullOrWhiteSpace(title) ? "CHENMU Browser" : title + " - CHENMU Browser";
+            if (String.IsNullOrWhiteSpace(title))
+                title = String.IsNullOrWhiteSpace(core.Source) ? "网页" : GetBookmarkHost(core.Source);
+            tab.Title = title;
+            UpdateTabHeaders();
+            if (tab == _activeTab)
+                Text = title + " - CHENMU Browser";
         }
 
-        private void ShowRuntimeProblem(Exception ex, string attemptedUrl)
+        private void ShowRuntimeProblem(BrowserTab tab, Exception ex, string attemptedUrl)
         {
-            if (_webView != null)
+            if (tab != null && tab.WebView != null)
             {
-                _viewport.Controls.Remove(_webView);
-                _webView.Dispose();
-                _webView = null;
+                _viewport.Controls.Remove(tab.WebView);
+                tab.WebView.Dispose();
+                tab.WebView = null;
             }
+            if (tab != null)
+            {
+                tab.IsHome = true;
+                tab.Title = "新标签页";
+            }
+            if (tab != _activeTab || IsDisposed || Disposing)
+                return;
+            _webView = null;
             HideErrorView();
             _homeView.Visible = false;
+            UpdateTabHeaders();
 
             var panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Padding = new Padding(34) };
             var heading = new Label
@@ -1362,7 +1922,7 @@ namespace ChenmuBrowser
                 Text = "暂时无法启动网页内核",
                 Dock = DockStyle.Top,
                 Height = 42,
-                Font = new Font("Segoe UI", 18F, FontStyle.Bold, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 18F, FontStyle.Bold, GraphicsUnit.Point),
                 ForeColor = Color.FromArgb(45, 55, 65)
             };
             var message = new Label
@@ -1558,6 +2118,22 @@ namespace ChenmuBrowser
             {
                 _statusLabel.Text = "书签无法保存：" + ex.Message;
             }
+        }
+
+        private sealed class BrowserTab
+        {
+            public string Title { get; set; }
+            public bool IsHome { get; set; }
+            public Panel Header { get; set; }
+            public WebView2 WebView { get; set; }
+            public Task InitializationTask { get; set; }
+        }
+
+        private sealed class DownloadEntry
+        {
+            public CoreWebView2DownloadOperation Operation { get; set; }
+            public string FilePath { get; set; }
+            public BrowserTab Owner { get; set; }
         }
 
         private sealed class BookmarkItem

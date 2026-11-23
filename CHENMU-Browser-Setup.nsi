@@ -28,7 +28,16 @@ Section "CHENMU Browser（必需）" SEC_MAIN
   SectionIn RO
   SetShellVarContext current
   SetOutPath "$INSTDIR"
-  File /r /x "*.pdb" /x "CHENMU-Browser-Setup-x64.exe" "dist/*.*"
+  File "dist\CHENMU Browser.exe"
+  File "dist\CHENMU Browser.exe.config"
+  File "dist\Microsoft.Web.WebView2.Core.dll"
+  File "dist\Microsoft.Web.WebView2.WinForms.dll"
+  File "dist\Microsoft.Web.WebView2.Wpf.dll"
+  File "dist\WebView2Loader.dll"
+  SetOutPath "$INSTDIR\Assets"
+  File "dist\Assets\chenmu-logo.png"
+  File "dist\Assets\domain-blocklist.txt"
+  SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   CreateDirectory "$SMPROGRAMS\CHENMU Browser"
