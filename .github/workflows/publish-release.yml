@@ -1,0 +1,60 @@
+name: Publish Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content -LiteralPath 'CHENMU-Browser.csproj' -Raw
+          $version = [string]$project.Project.PropertyGroup[0].Version
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME must match project version v$version"
+          }
+
+      - name: Build application and installer
+        shell: pwsh
+        run: .\build-windows.ps1
+
+      - name: Set up Python for packaging
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Package release assets
+        shell: pwsh
+        run: python package-release.py
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$env:GITHUB_REF_NAME" `
+            "dist/CHENMU-Browser-Setup-x64.exe" `
+            "dist/CHENMU-Browser-Windows-x64.zip" `
+            "dist/CHENMU-Browser-source.zip" `
+            "dist/SHA256SUMS.txt" `
+            --title "CHENMU Browser $env:GITHUB_REF_NAME" `
+            --generate-notes

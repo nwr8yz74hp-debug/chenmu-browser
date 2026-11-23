@@ -1,0 +1,11 @@
+bin/
+obj/
+dist/
+dist-rid/
+dist-check*/
+dist-update-check/
+*.user
+*.suo
+.vs/
+*.zip
+WINDOWS-TECH-NOTES.md

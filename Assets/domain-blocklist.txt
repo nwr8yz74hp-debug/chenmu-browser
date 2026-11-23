@@ -1,0 +1,27 @@
+# CHENMU Browser local starter list. Host suffixes are matched locally; no list updates or telemetry.
+# This is a basic seed list, not a replacement for a full ad-blocking extension.
+ad.doubleclick.net
+doubleclick.net
+googlesyndication.com
+googleadservices.com
+adservice.google.com
+pagead2.googlesyndication.com
+adnxs.com
+adnxs.net
+adsrvr.org
+criteo.com
+criteo.net
+scorecardresearch.com
+quantserve.com
+taboola.com
+outbrain.com
+pixel.facebook.com
+connect.facebook.net
+analytics.twitter.com
+ads-twitter.com
+google-analytics.com
+googletagmanager.com
+hotjar.com
+mixpanel.com
+segment.io
+segment.com
