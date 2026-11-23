@@ -28,7 +28,9 @@ jobs:
         shell: pwsh
         run: |
           [xml]$project = Get-Content -LiteralPath 'CHENMU-Browser.csproj' -Raw
-          $version = [string]$project.Project.PropertyGroup[0].Version
+          $versionNode = $project.SelectSingleNode('/Project/PropertyGroup/Version')
+          if ($null -eq $versionNode) { throw 'Project version was not found in CHENMU-Browser.csproj.' }
+          $version = $versionNode.InnerText.Trim()
           if ($env:GITHUB_REF_NAME -ne "v$version") {
             throw "Tag $env:GITHUB_REF_NAME must match project version v$version"
           }

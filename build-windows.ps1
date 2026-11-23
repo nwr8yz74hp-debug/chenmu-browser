@@ -14,7 +14,11 @@ if ($SdkVersion -lt [version]'10.0.404') {
 }
 
 [xml]$ProjectDocument = Get-Content -LiteralPath $Project -Raw
-$Version = [string]$ProjectDocument.Project.PropertyGroup[0].Version
+$VersionNode = $ProjectDocument.SelectSingleNode('/Project/PropertyGroup/Version')
+if ($null -eq $VersionNode) {
+    throw '项目文件中找不到版本号。'
+}
+$Version = $VersionNode.InnerText.Trim()
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "项目版本号无效：$Version"
 }
