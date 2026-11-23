@@ -19,7 +19,6 @@ namespace ChenmuBrowser
         public string Tag { get; set; }
         public string DownloadUrl { get; set; }
         public string Sha256 { get; set; }
-        public long ExpectedSize { get; set; }
     }
 
     internal static class UpdateService
@@ -27,11 +26,15 @@ namespace ChenmuBrowser
         private const string RepositoryOwner = "nwr8yz74hp-debug";
         private const string RepositoryName = "chenmu-browser";
         private const string InstallerAssetName = "CHENMU-Browser-Setup-x64.exe";
+        private const string ChecksumsAssetName = "SHA256SUMS.txt";
+        private const int MaximumChecksumManifestBytes = 64 * 1024;
         private const long MaximumInstallerBytes = 120L * 1024L * 1024L;
         private static readonly string LatestReleaseUrl =
-            "https://api.github.com/repos/" + RepositoryOwner + "/" + RepositoryName + "/releases/latest";
-        private static readonly string InstallerPathPrefix =
+            "https://github.com/" + RepositoryOwner + "/" + RepositoryName + "/releases/latest";
+        private static readonly string ReleaseAssetPathPrefix =
             "/" + RepositoryOwner + "/" + RepositoryName + "/releases/download/";
+        private static readonly string LatestReleaseTagPathPrefix =
+            "/" + RepositoryOwner + "/" + RepositoryName + "/releases/tag/";
 
         public static Version CurrentVersion
         {
@@ -63,66 +66,39 @@ namespace ChenmuBrowser
 
         public static async Task<UpdateInfo> GetLatestReleaseAsync()
         {
-            using (var client = CreateClient(true, false, TimeSpan.FromSeconds(12)))
-            using (var response = await client.GetAsync(LatestReleaseUrl).ConfigureAwait(false))
+            using (var client = CreateClient(TimeSpan.FromSeconds(12)))
+            using (var latestResponse = await GetWithHttpsRedirectsAsync(client, new Uri(LatestReleaseUrl)).ConfigureAwait(false))
             {
-                if (response.StatusCode == HttpStatusCode.NotFound)
+                if (latestResponse.StatusCode == HttpStatusCode.NotFound)
                     return null;
-                response.EnsureSuccessStatusCode();
+                latestResponse.EnsureSuccessStatusCode();
 
-                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                var release = new System.Web.Script.Serialization.JavaScriptSerializer()
-                    .DeserializeObject(json) as Dictionary<string, object>;
-                if (release == null)
-                    throw new InvalidDataException("更新服务器返回的数据无法识别。");
-
-                var tag = ReadString(release, "tag_name");
+                var latestUri = latestResponse.RequestMessage == null ? null : latestResponse.RequestMessage.RequestUri;
+                var tag = ExtractLatestTag(latestUri);
                 Version version;
                 if (!TryParseVersion(tag, out version))
                     throw new InvalidDataException("更新版本号格式无效；正式版本需使用 vX.Y.Z 格式。");
 
-                object assetsValue;
-                var assets = release.TryGetValue("assets", out assetsValue) ? assetsValue as object[] : null;
-                var asset = assets == null
-                    ? null
-                    : assets.OfType<Dictionary<string, object>>()
-                        .FirstOrDefault(item => String.Equals(ReadString(item, "name"), InstallerAssetName, StringComparison.Ordinal));
-                if (asset == null)
-                    throw new InvalidDataException("最新版本中没有找到 Windows x64 安装包。");
-
-                object sizeValue;
-                long assetSize;
-                if (!asset.TryGetValue("size", out sizeValue) ||
-                    !Int64.TryParse(Convert.ToString(sizeValue, CultureInfo.InvariantCulture), NumberStyles.Integer,
-                        CultureInfo.InvariantCulture, out assetSize) ||
-                    assetSize <= 0 || assetSize > MaximumInstallerBytes)
-                    throw new InvalidDataException("更新安装包大小无效或超出安全限制。");
-
-                var downloadUrl = ReadString(asset, "browser_download_url");
-                Uri uri;
-                var expectedAssetPath = InstallerPathPrefix + Uri.EscapeDataString(tag) + "/" + Uri.EscapeDataString(InstallerAssetName);
-                if (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out uri) ||
-                    !String.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
-                    !String.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase) ||
-                    !String.Equals(uri.AbsolutePath, expectedAssetPath, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException("更新下载地址不属于已配置的公开 GitHub Releases 源。");
-
-                var digest = ReadString(asset, "digest");
-                const string prefix = "sha256:";
-                if (String.IsNullOrWhiteSpace(digest) || !digest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException("发布包缺少 SHA-256 校验摘要，已停止更新以保护安全。");
-                var sha256 = digest.Substring(prefix.Length).Trim();
-                if (sha256.Length != 64 || sha256.Any(ch => !Uri.IsHexDigit(ch)))
-                    throw new InvalidDataException("发布包的 SHA-256 校验摘要格式无效。");
-
-                return new UpdateInfo
+                var downloadUri = BuildReleaseAssetUri(tag, InstallerAssetName);
+                var checksumsUri = BuildReleaseAssetUri(tag, ChecksumsAssetName);
+                using (var checksumResponse = await GetWithHttpsRedirectsAsync(client, checksumsUri).ConfigureAwait(false))
                 {
-                    Version = version,
-                    Tag = tag,
-                    DownloadUrl = uri.AbsoluteUri,
-                    Sha256 = sha256.ToLowerInvariant(),
-                    ExpectedSize = assetSize
-                };
+                    if (checksumResponse.StatusCode == HttpStatusCode.NotFound)
+                        throw new InvalidDataException("最新版本中没有找到 SHA-256 校验清单。");
+                    checksumResponse.EnsureSuccessStatusCode();
+                    var contentLength = checksumResponse.Content.Headers.ContentLength;
+                    if (contentLength.HasValue && (contentLength.Value <= 0 || contentLength.Value > MaximumChecksumManifestBytes))
+                        throw new InvalidDataException("SHA-256 校验清单超出安全大小限制。");
+                    var manifest = await ReadSmallTextAsync(checksumResponse.Content, MaximumChecksumManifestBytes).ConfigureAwait(false);
+                    var sha256 = ReadSha256FromManifest(manifest, InstallerAssetName);
+                    return new UpdateInfo
+                    {
+                        Version = version,
+                        Tag = tag,
+                        DownloadUrl = downloadUri.AbsoluteUri,
+                        Sha256 = sha256
+                    };
+                }
             }
         }
 
@@ -134,7 +110,7 @@ namespace ChenmuBrowser
             var outputPath = Path.Combine(Path.GetTempPath(), "CHENMU-Browser-Setup-" + Guid.NewGuid().ToString("N") + ".exe");
             try
             {
-                using (var client = CreateClient(false, false, TimeSpan.FromMinutes(5)))
+                using (var client = CreateClient(TimeSpan.FromMinutes(5)))
                 using (var response = await GetWithHttpsRedirectsAsync(client, new Uri(update.DownloadUrl)).ConfigureAwait(false))
                 {
                     response.EnsureSuccessStatusCode();
@@ -156,8 +132,8 @@ namespace ChenmuBrowser
                             await target.WriteAsync(buffer, 0, read).ConfigureAwait(false);
                         }
                     }
-                    if (total == 0 || total != update.ExpectedSize)
-                        throw new InvalidDataException("下载文件大小与 GitHub Release 声明不一致。");
+                    if (total == 0 || (declaredLength.HasValue && total != declaredLength.Value))
+                        throw new InvalidDataException("下载文件大小与服务器响应不一致。");
                 }
 
                 string actualHash;
@@ -253,6 +229,7 @@ namespace ChenmuBrowser
             for (var hop = 0; hop < 6; hop++)
             {
                 if (!String.Equals(current.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+                    !current.IsDefaultPort || !String.IsNullOrEmpty(current.UserInfo) ||
                     !IsAllowedDownloadHost(current.Host))
                     throw new InvalidDataException("更新下载发生不安全的地址跳转。");
 
@@ -272,6 +249,84 @@ namespace ChenmuBrowser
             throw new InvalidDataException("更新下载的重定向次数超出限制。");
         }
 
+        private static string ExtractLatestTag(Uri latestUri)
+        {
+            if (latestUri == null ||
+                !String.Equals(latestUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+                !latestUri.IsDefaultPort || !String.IsNullOrEmpty(latestUri.UserInfo) ||
+                !String.Equals(latestUri.Host, "github.com", StringComparison.OrdinalIgnoreCase) ||
+                !String.IsNullOrEmpty(latestUri.Query) || !String.IsNullOrEmpty(latestUri.Fragment))
+                throw new InvalidDataException("无法从公开 GitHub Release 链接识别版本。");
+
+            var path = latestUri.AbsolutePath;
+            if (!path.StartsWith(LatestReleaseTagPathPrefix, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("GitHub 最新 Release 重定向地址不属于已配置的仓库。");
+
+            var encodedTag = path.Substring(LatestReleaseTagPathPrefix.Length);
+            var tag = Uri.UnescapeDataString(encodedTag);
+            Version ignored;
+            if (String.IsNullOrWhiteSpace(tag) || tag.IndexOf('/') >= 0 || tag.IndexOf('\\') >= 0 ||
+                !TryParseVersion(tag, out ignored))
+                throw new InvalidDataException("更新版本号格式无效；正式版本需使用 vX.Y.Z 格式。");
+            return tag;
+        }
+
+        private static Uri BuildReleaseAssetUri(string tag, string assetName)
+        {
+            Version ignored;
+            if (!TryParseVersion(tag, out ignored) ||
+                (!String.Equals(assetName, InstallerAssetName, StringComparison.Ordinal) &&
+                 !String.Equals(assetName, ChecksumsAssetName, StringComparison.Ordinal)))
+                throw new InvalidDataException("更新文件名称或版本标签无效。");
+
+            var uri = new Uri("https://github.com/" + RepositoryOwner + "/" + RepositoryName +
+                "/releases/download/" + Uri.EscapeDataString(tag) + "/" + Uri.EscapeDataString(assetName));
+            var expectedPath = ReleaseAssetPathPrefix + Uri.EscapeDataString(tag) + "/" + Uri.EscapeDataString(assetName);
+            if (!String.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(uri.AbsolutePath, expectedPath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("更新下载地址不属于已配置的公开 GitHub Releases 源。");
+            return uri;
+        }
+
+        private static string ReadSha256FromManifest(string manifest, string assetName)
+        {
+            if (String.IsNullOrWhiteSpace(manifest) || Encoding.UTF8.GetByteCount(manifest) > MaximumChecksumManifestBytes)
+                throw new InvalidDataException("SHA-256 校验清单为空或超出安全大小限制。");
+
+            string sha256 = null;
+            foreach (var line in manifest.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2 || !String.Equals(parts[1], assetName, StringComparison.Ordinal))
+                    continue;
+                if (parts.Length != 2 || sha256 != null || parts[0].Length != 64 || parts[0].Any(ch => !Uri.IsHexDigit(ch)))
+                    throw new InvalidDataException("SHA-256 校验清单中安装包摘要格式无效。");
+                sha256 = parts[0].ToLowerInvariant();
+            }
+
+            if (sha256 == null)
+                throw new InvalidDataException("SHA-256 校验清单中没有 Windows x64 安装包摘要。");
+            return sha256;
+        }
+
+        private static async Task<string> ReadSmallTextAsync(HttpContent content, int maximumBytes)
+        {
+            using (var source = await content.ReadAsStreamAsync().ConfigureAwait(false))
+            using (var target = new MemoryStream())
+            {
+                var buffer = new byte[4096];
+                int read;
+                while ((read = await source.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+                {
+                    if (target.Length + read > maximumBytes)
+                        throw new InvalidDataException("SHA-256 校验清单超出安全大小限制。");
+                    target.Write(buffer, 0, read);
+                }
+                return Encoding.UTF8.GetString(target.ToArray());
+            }
+        }
+
         private static bool IsRedirect(HttpStatusCode statusCode)
         {
             var code = (int)statusCode;
@@ -284,39 +339,26 @@ namespace ChenmuBrowser
                 host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static HttpClient CreateClient(bool apiRequest, bool allowRedirect, TimeSpan timeout)
+        private static HttpClient CreateClient(TimeSpan timeout)
         {
-            var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = allowRedirect });
+            var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
             client.Timeout = timeout;
             client.DefaultRequestHeaders.UserAgent.ParseAdd("CHENMU-Browser/" + CurrentVersion.ToString());
-            if (apiRequest)
-            {
-                client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-                client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2026-03-10");
-            }
             return client;
-        }
-
-        private static string ReadString(IDictionary<string, object> values, string key)
-        {
-            object value;
-            return values != null && values.TryGetValue(key, out value) && value != null
-                ? Convert.ToString(value, CultureInfo.InvariantCulture)
-                : String.Empty;
         }
 
         private static bool TryParseVersion(string tag, out Version version)
         {
             version = null;
-            if (String.IsNullOrWhiteSpace(tag))
+            if (String.IsNullOrWhiteSpace(tag) || !tag.StartsWith("v", StringComparison.Ordinal))
                 return false;
-            var value = tag.Trim();
-            if (value.StartsWith("v", StringComparison.OrdinalIgnoreCase))
-                value = value.Substring(1);
-            var suffix = value.IndexOfAny(new[] { '-', '+' });
-            if (suffix >= 0)
-                value = value.Substring(0, suffix);
-            return Version.TryParse(value, out version) && version.Build >= 0;
+            var value = tag.Substring(1);
+            var components = value.Split('.');
+            if (components.Length != 3 || components.Any(component => String.IsNullOrEmpty(component) ||
+                component.Any(ch => ch < '0' || ch > '9')))
+                return false;
+            return Version.TryParse(value, out version) && version.Build >= 0 &&
+                String.Equals(version.ToString(3), value, StringComparison.Ordinal);
         }
 
         private static string PowerShellLiteral(string value)
