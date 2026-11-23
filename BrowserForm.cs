@@ -104,6 +104,7 @@ namespace ChenmuBrowser
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(640, 500);
             Size = new Size(1180, 780);
+            WindowState = FormWindowState.Maximized;
             BackColor = Color.White;
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
@@ -1680,11 +1681,16 @@ namespace ChenmuBrowser
             try
             {
                 var core = sender as CoreWebView2;
-                var downloadsDirectory = core == null ? String.Empty : core.Profile.DefaultDownloadFolderPath;
+                var suggestedPath = e.ResultFilePath;
+                var downloadsDirectory = String.IsNullOrWhiteSpace(suggestedPath)
+                    ? String.Empty
+                    : Path.GetDirectoryName(suggestedPath);
+                if (String.IsNullOrWhiteSpace(downloadsDirectory))
+                    downloadsDirectory = core == null ? String.Empty : core.Profile.DefaultDownloadFolderPath;
                 if (String.IsNullOrWhiteSpace(downloadsDirectory))
                     downloadsDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
 
-                var fileName = Path.GetFileName(e.ResultFilePath);
+                var fileName = Path.GetFileName(suggestedPath);
                 if (String.IsNullOrWhiteSpace(fileName))
                     fileName = "download";
                 var resultPath = GetUniqueDownloadPath(downloadsDirectory, fileName);
@@ -1693,7 +1699,8 @@ namespace ChenmuBrowser
                 var ownerTab = _tabs.FirstOrDefault(tab => tab.WebView != null && tab.WebView.CoreWebView2 == core);
                 var entry = new DownloadEntry { Operation = e.DownloadOperation, FilePath = resultPath, Owner = ownerTab };
                 _downloads.Insert(0, entry);
-                e.Handled = true;
+                // Keep WebView2's built-in download UI visible; the browser list below tracks the same operation.
+                e.Handled = false;
                 if (ownerTab == _activeTab)
                     _statusLabel.Text = "正在下载：" + Path.GetFileName(resultPath);
                 entry.Operation.StateChanged += (downloadSender, args) =>
@@ -1721,9 +1728,9 @@ namespace ChenmuBrowser
             }
             catch (Exception ex)
             {
-                e.Cancel = true;
-                if (!IsDisposed && !Disposing && IsActiveCore(sender as CoreWebView2))
-                    _statusLabel.Text = "无法开始下载：" + ex.Message;
+                // If custom path selection fails, preserve WebView2's original path and allow its default flow.
+                if (!IsDisposed && !Disposing)
+                    _statusLabel.Text = "下载路径设置失败，继续使用默认下载流程：" + ex.Message;
             }
         }
 
@@ -2052,6 +2059,19 @@ namespace ChenmuBrowser
             list.Columns.Add("文件名", 300, HorizontalAlignment.Left);
             list.Columns.Add("状态", 125, HorizontalAlignment.Left);
             list.Columns.Add("进度", 210, HorizontalAlignment.Left);
+            var listHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+            var emptyState = new Label
+            {
+                Text = "暂无下载记录。\r\n请先在网页中点击文件的下载链接；下载开始后会显示在这里。",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Color.FromArgb(110, 125, 145),
+                BackColor = Color.White,
+                Font = dialog.Font
+            };
+            listHost.Controls.Add(list);
+            listHost.Controls.Add(emptyState);
+            emptyState.BringToFront();
 
             var buttons = new FlowLayoutPanel
             {
@@ -2071,7 +2091,7 @@ namespace ChenmuBrowser
             buttons.Controls.Add(folderButton);
             buttons.Controls.Add(cancelButton);
             buttons.Controls.Add(openButton);
-            dialog.Controls.Add(list);
+            dialog.Controls.Add(listHost);
             dialog.Controls.Add(buttons);
             dialog.CancelButton = closeButton;
 
@@ -2079,6 +2099,7 @@ namespace ChenmuBrowser
             {
                 RefreshDownloadList(list);
                 UpdateDownloadManagerButtons(list, openButton, folderButton, cancelButton, clearButton);
+                emptyState.Visible = _downloads.Count == 0;
             };
             list.SelectedIndexChanged += delegate { UpdateDownloadManagerButtons(list, openButton, folderButton, cancelButton, clearButton); };
             list.DoubleClick += delegate { OpenSelectedDownload(list); };
