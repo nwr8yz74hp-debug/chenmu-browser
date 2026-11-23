@@ -75,9 +75,13 @@ namespace ChenmuBrowser
 
             LoadPreferences();
             LoadBlocklist();
-            BuildInterface();
             HandleCreated += delegate { ApplyWindowCaptionColors(); };
-            Shown += async delegate { await CheckForUpdatesAsync(false); };
+            BuildInterface();
+            Shown += async delegate
+            {
+                ApplyWindowCaptionColors();
+                await CheckForUpdatesAsync(false);
+            };
         }
 
         private void ApplyWindowCaptionColors()
