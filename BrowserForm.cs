@@ -16,15 +16,28 @@ namespace ChenmuBrowser
     internal sealed class BrowserForm : Form
     {
         private const int EmSetCueBanner = 0x1501;
-        private const int DwmwaUseImmersiveDarkModeLegacy = 19;
         private const int DwmwaUseImmersiveDarkMode = 20;
         private const int DwmwaBorderColor = 34;
         private const int DwmwaCaptionColor = 35;
         private const int DwmwaTextColor = 36;
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct RtlOsVersionInfo
+        {
+            public uint Size;
+            public uint MajorVersion;
+            public uint MinorVersion;
+            public uint BuildNumber;
+            public uint PlatformId;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+            public string ServicePack;
+        }
+
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr SendMessage(IntPtr hWnd, int message, IntPtr wParam, string lParam);
         [DllImport("dwmapi.dll", PreserveSig = true)]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+        [DllImport("ntdll.dll", EntryPoint = "RtlGetVersion", ExactSpelling = true)]
+        private static extern int RtlGetVersion(ref RtlOsVersionInfo versionInfo);
 
         private readonly Panel _header = new Panel();
         private readonly Panel _tabStrip = new Panel();
@@ -76,6 +89,7 @@ namespace ChenmuBrowser
             LoadPreferences();
             LoadBlocklist();
             HandleCreated += delegate { ApplyWindowCaptionColors(); };
+            Activated += delegate { ApplyWindowCaptionColors(); };
             BuildInterface();
             Shown += async delegate
             {
@@ -92,15 +106,34 @@ namespace ChenmuBrowser
             try
             {
                 var lightMode = 0;
-                var caption = ToColorRef(Color.FromArgb(248, 250, 253));
-                var text = ToColorRef(Color.FromArgb(35, 55, 75));
-                DwmSetWindowAttribute(Handle, DwmwaUseImmersiveDarkModeLegacy, ref lightMode, sizeof(int));
                 DwmSetWindowAttribute(Handle, DwmwaUseImmersiveDarkMode, ref lightMode, sizeof(int));
-                DwmSetWindowAttribute(Handle, DwmwaCaptionColor, ref caption, sizeof(int));
-                DwmSetWindowAttribute(Handle, DwmwaTextColor, ref text, sizeof(int));
-                DwmSetWindowAttribute(Handle, DwmwaBorderColor, ref caption, sizeof(int));
+                if (IsWindows11OrGreater())
+                {
+                    var caption = ToColorRef(Color.FromArgb(248, 250, 253));
+                    var text = ToColorRef(Color.FromArgb(35, 55, 75));
+                    DwmSetWindowAttribute(Handle, DwmwaCaptionColor, ref caption, sizeof(int));
+                    DwmSetWindowAttribute(Handle, DwmwaTextColor, ref text, sizeof(int));
+                    DwmSetWindowAttribute(Handle, DwmwaBorderColor, ref caption, sizeof(int));
+                }
             }
             catch { }
+        }
+
+        private static bool IsWindows11OrGreater()
+        {
+            try
+            {
+                var version = new RtlOsVersionInfo
+                {
+                    Size = (uint)Marshal.SizeOf(typeof(RtlOsVersionInfo)),
+                    ServicePack = String.Empty
+                };
+                if (RtlGetVersion(ref version) == 0)
+                    return version.BuildNumber >= 22000;
+            }
+            catch { }
+
+            return Environment.OSVersion.Version.Build >= 22000;
         }
 
         private static int ToColorRef(Color color)
@@ -305,6 +338,9 @@ namespace ChenmuBrowser
             _tabHeaders.WrapContents = false;
             _tabHeaders.FlowDirection = FlowDirection.LeftToRight;
             _tabHeaders.Margin = Padding.Empty;
+            _tabHeaders.SizeChanged += delegate { UpdateTabStripHeight(); };
+            _tabHeaders.ControlAdded += delegate { UpdateTabStripHeight(); };
+            _tabHeaders.ControlRemoved += delegate { UpdateTabStripHeight(); };
             var newTabButton = new Button
             {
                 Text = "+",
@@ -419,6 +455,7 @@ namespace ChenmuBrowser
             tab.Header = header;
             _tabs.Add(tab);
             _tabHeaders.Controls.Add(header);
+            UpdateTabStripHeight();
             SwitchToTab(tab);
             FocusAddress();
         }
@@ -431,6 +468,7 @@ namespace ChenmuBrowser
             var wasActive = tab == _activeTab;
             _tabs.RemoveAt(index);
             _tabHeaders.Controls.Remove(tab.Header);
+            UpdateTabStripHeight();
             if (tab.Header != null)
                 tab.Header.Dispose();
             if (tab.WebView != null)
@@ -484,6 +522,29 @@ namespace ChenmuBrowser
                 UpdateWindowTitle(tab.WebView.CoreWebView2);
             }
             UpdateTabHeaders();
+        }
+
+        private void UpdateTabStripHeight()
+        {
+            if (_tabStrip.IsDisposed || _tabHeaders.IsDisposed)
+                return;
+
+            long requiredWidth = _tabHeaders.Padding.Horizontal;
+            var requiredContentHeight = 0;
+            foreach (Control header in _tabHeaders.Controls)
+            {
+                requiredWidth += header.Width + header.Margin.Horizontal;
+                requiredContentHeight = Math.Max(requiredContentHeight, header.Height + header.Margin.Vertical);
+            }
+
+            var baseHeight = Math.Max(40, _tabStrip.Padding.Vertical + requiredContentHeight);
+            var hasHorizontalOverflow = requiredWidth > _tabHeaders.ClientSize.Width;
+            var scrollBarReserve = hasHorizontalOverflow
+                ? Math.Max(16, SystemInformation.HorizontalScrollBarHeight) + 2
+                : 0;
+            var targetHeight = baseHeight + scrollBarReserve;
+            if (_tabStrip.Height != targetHeight)
+                _tabStrip.Height = targetHeight;
         }
 
         private void UpdateTabHeaders()
