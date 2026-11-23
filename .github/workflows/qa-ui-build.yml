@@ -1,0 +1,58 @@
+name: Isolated UI QA build
+
+on:
+  push:
+    branches:
+      - qa/v1.0.13-ui
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore and build isolated Debug x64 candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $PWD 'qa-output'
+          Remove-Item -LiteralPath $output -Recurse -Force -ErrorAction SilentlyContinue
+          dotnet restore .\CHENMU-Browser.csproj
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed.' }
+          dotnet build .\CHENMU-Browser.csproj -c Debug -r win-x64 -p:PlatformTarget=x64 -o $output --nologo
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed.' }
+          $exe = Join-Path $output 'CHENMU Browser.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'The QA executable is missing.' }
+          $loaderCandidates = @(
+            (Join-Path $output 'WebView2Loader.dll'),
+            (Join-Path $output 'runtimes\win-x64\native\WebView2Loader.dll')
+          )
+          if (-not ($loaderCandidates | Where-Object { Test-Path -LiteralPath $_ })) {
+            throw 'The x64 WebView2 native loader is missing.'
+          }
+          $fileVersion = (Get-Item -LiteralPath $exe).VersionInfo.FileVersion
+          @(
+            "Version: $fileVersion",
+            'Configuration: Debug x64',
+            'Target: .NET Framework 4.8 / win-x64',
+            "Source commit: $env:GITHUB_SHA",
+            'Purpose: isolated UI QA only; not a release package'
+          ) | Set-Content -LiteralPath (Join-Path $output 'QA-BUILD.txt') -Encoding utf8
+
+      - name: Upload short-lived QA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CHENMU-Browser-1.0.13-UI-QA
+          path: qa-output/**
+          if-no-files-found: error
+          retention-days: 1

@@ -49,17 +49,21 @@ namespace ChenmuBrowser
         private static extern int RtlGetVersion(ref RtlOsVersionInfo versionInfo);
 
         private readonly Panel _header = new Panel();
-        private readonly Panel _tabStrip = new Panel();
+        private readonly Panel _tabSidebarHost = new Panel();
+        private readonly Panel _tabSidebarEdge = new Panel();
+        private readonly Panel _tabSidebarContent = new Panel();
         private readonly Panel _tabViewport = new Panel();
         private readonly FlowLayoutPanel _tabHeaders = new FlowLayoutPanel();
-        private readonly HScrollBar _tabScrollBar = new HScrollBar();
+        private readonly VScrollBar _tabScrollBar = new VScrollBar();
+        private readonly TableLayoutPanel _rootLayout = new TableLayoutPanel();
+        private readonly Panel _browserSurface = new Panel();
+        private readonly Timer _tabSidebarHoverTimer = new Timer();
         private readonly TextBox _addressBox = new TextBox();
         private readonly Panel _viewport = new Panel();
         private readonly Panel _statusPanel = new Panel();
         private readonly Label _statusLabel = new Label();
         private readonly ToolTip _toolTip = new ToolTip();
-        private readonly string _dataRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CHENMU Browser");
+        private readonly string _dataRoot;
         private readonly HashSet<string> _blockedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private Panel _homeView;
@@ -69,7 +73,10 @@ namespace ChenmuBrowser
         private WebView2 _webView;
         private readonly List<BrowserTab> _tabs = new List<BrowserTab>();
         private BrowserTab _activeTab;
-        private bool _updatingTabStrip;
+        private bool _updatingTabSidebar;
+        private bool _tabSidebarExpanded;
+        private int _tabSidebarLeaveTicks;
+        private readonly bool _isIsolatedTest;
         private Task<CoreWebView2Environment> _webViewEnvironmentTask;
         private readonly List<DownloadEntry> _downloads = new List<DownloadEntry>();
         private bool _blockTrackers = true;
@@ -81,10 +88,14 @@ namespace ChenmuBrowser
         private string SettingsPath { get { return Path.Combine(_dataRoot, "settings.ini"); } }
         private string BookmarksPath { get { return Path.Combine(_dataRoot, "bookmarks.tsv"); } }
 
-        public BrowserForm()
+        public BrowserForm(string dataRoot = null, bool isIsolatedTest = false, int initialTestTabs = 1)
         {
+            _dataRoot = String.IsNullOrWhiteSpace(dataRoot)
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CHENMU Browser")
+                : dataRoot;
+            _isIsolatedTest = isIsolatedTest;
             AutoScaleMode = AutoScaleMode.Dpi;
-            Text = "CHENMU Browser";
+            Text = _isIsolatedTest ? "CHENMU Browser（隔离测试）" : "CHENMU Browser";
             try
             {
                 var executableIcon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -103,13 +114,54 @@ namespace ChenmuBrowser
             HandleCreated += delegate { ApplyWindowCaptionColors(); };
             Activated += delegate { ApplyWindowCaptionColors(); };
             BuildInterface();
+#if DEBUG
+            if (_isIsolatedTest)
+                InitializeVisualTestTabs(initialTestTabs);
+#endif
             Shown += async delegate
             {
                 ApplyWindowCaptionColors();
-                UpdateTabStripHeight();
-                await CheckForUpdatesAsync(false);
+                UpdateTabSidebar();
+                EnsureTabVisible(_activeTab);
+#if DEBUG
+                UpdateVisualTestStatus();
+#endif
+                if (!_isIsolatedTest)
+                    await CheckForUpdatesAsync(false);
+            };
+            FormClosed += delegate
+            {
+                _tabSidebarHoverTimer.Stop();
+                _tabSidebarHoverTimer.Dispose();
             };
         }
+
+#if DEBUG
+        private void InitializeVisualTestTabs(int requestedCount)
+        {
+            var count = Math.Max(1, Math.Min(60, requestedCount));
+            while (_tabs.Count < count)
+                CreateNewTab();
+            for (var index = 0; index < _tabs.Count; index++)
+                _tabs[index].Title = "布局验证标签 " + (index + 1).ToString("00", CultureInfo.InvariantCulture) +
+                    " — 较长页面标题用于省略显示测试";
+            UpdateTabHeaders();
+            _statusLabel.Text = "隔离测试 profile · " + _tabs.Count.ToString(CultureInfo.InvariantCulture) + " 个标签";
+            Text = "CHENMU Browser（隔离测试 · " + _tabs.Count.ToString(CultureInfo.InvariantCulture) + " 标签）";
+        }
+
+        private void UpdateVisualTestStatus()
+        {
+            if (!_isIsolatedTest || _statusLabel.IsDisposed)
+                return;
+            var screen = Screen.FromControl(this);
+            _statusLabel.Text = "隔离测试 · " + DeviceDpi.ToString(CultureInfo.InvariantCulture) + " DPI · " +
+                screen.Bounds.Width.ToString(CultureInfo.InvariantCulture) + "×" +
+                screen.Bounds.Height.ToString(CultureInfo.InvariantCulture) + " · " +
+                _tabs.Count.ToString(CultureInfo.InvariantCulture) + " 个标签 · 侧栏" +
+                (_tabSidebarExpanded ? "展开" : "收起");
+        }
+#endif
 
         private void ApplyWindowCaptionColors()
         {
@@ -204,7 +256,7 @@ namespace ChenmuBrowser
                 if (host.IsDisposed || textBox.IsDisposed)
                     return;
                 var innerHeight = Math.Max(0, host.ClientSize.Height - host.Padding.Vertical);
-                var textHeight = Math.Max(1, textBox.PreferredHeight);
+                var textHeight = Math.Max(1, Math.Min(Math.Max(1, innerHeight), Math.Max(1, textBox.PreferredHeight)));
                 textBox.SetBounds(host.Padding.Left,
                     host.Padding.Top + Math.Max(0, (innerHeight - textHeight) / 2),
                     Math.Max(0, host.ClientSize.Width - host.Padding.Horizontal), textHeight);
@@ -280,17 +332,19 @@ namespace ChenmuBrowser
                 BackColor = Color.White,
                 Padding = new Padding(2, 0, 2, 0)
             };
-            addressLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28F));
+            addressLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 40F));
             addressLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            addressLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30F));
+            addressLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34F));
             addressLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             var addressGlyph = new Label
             {
-                Text = "⌕",
+                Text = "\uE721",
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Segoe UI Symbol", 17F, FontStyle.Regular, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(105, 120, 137)
+                Font = new Font("Segoe MDL2 Assets", 12F, FontStyle.Regular, GraphicsUnit.Point),
+                ForeColor = Color.FromArgb(105, 120, 137),
+                Margin = Padding.Empty,
+                AccessibleName = "搜索图标"
             };
             _addressBox.BorderStyle = BorderStyle.None;
             _addressBox.BackColor = Color.White;
@@ -299,7 +353,7 @@ namespace ChenmuBrowser
             _addressBox.KeyDown += AddressBox_KeyDown;
             SetCueBanner(_addressBox, "输入网址或搜索关键词");
             _toolTip.SetToolTip(_addressBox, "输入网址或搜索关键词；按 Ctrl+L 可快速定位到这里");
-            var addressBoxHost = CreateCenteredTextBoxHost(_addressBox, new Padding(5, 0, 4, 0));
+            var addressBoxHost = CreateCenteredTextBoxHost(_addressBox, new Padding(8, 0, 8, 0));
             var addressClearButton = new Button
             {
                 Text = "×",
@@ -378,65 +432,7 @@ namespace ChenmuBrowser
             chrome.Controls.Add(settingsButton, 8, 0);
             _header.Controls.Add(chrome);
 
-            _tabStrip.Dock = DockStyle.Top;
-            _tabStrip.Height = 40;
-            _tabStrip.Padding = new Padding(7, 3, 7, 3);
-            _tabStrip.BackColor = _header.BackColor;
-            _tabViewport.Dock = DockStyle.Fill;
-            _tabViewport.Margin = Padding.Empty;
-            _tabViewport.BackColor = _tabStrip.BackColor;
-            _tabHeaders.Dock = DockStyle.None;
-            _tabHeaders.AutoScroll = false;
-            _tabHeaders.WrapContents = false;
-            _tabHeaders.FlowDirection = FlowDirection.LeftToRight;
-            _tabHeaders.Margin = Padding.Empty;
-            _tabHeaders.Location = Point.Empty;
-            _tabHeaders.Height = 34;
-            _tabHeaders.ControlAdded += delegate { UpdateTabStripHeight(); };
-            _tabHeaders.ControlRemoved += delegate { UpdateTabStripHeight(); };
-            _tabViewport.Controls.Add(_tabHeaders);
-            _tabViewport.SizeChanged += delegate { UpdateTabStripHeight(); };
-            _tabScrollBar.Dock = DockStyle.Fill;
-            _tabScrollBar.Margin = Padding.Empty;
-            _tabScrollBar.Visible = false;
-            _tabScrollBar.SmallChange = 40;
-            _tabScrollBar.LargeChange = 1;
-            _tabScrollBar.ValueChanged += delegate { PositionTabHeaders(); };
-            var newTabButton = new Button
-            {
-                Text = "+",
-                Dock = DockStyle.Fill,
-                Width = 34,
-                Margin = Padding.Empty,
-                FlatStyle = FlatStyle.Flat,
-                BackColor = _tabStrip.BackColor,
-                ForeColor = Color.FromArgb(66, 82, 100),
-                Font = new Font("Segoe UI", 16F, FontStyle.Regular, GraphicsUnit.Point),
-                Cursor = Cursors.Hand,
-                TabStop = false
-            };
-            newTabButton.FlatAppearance.BorderSize = 0;
-            newTabButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(239, 244, 250);
-            newTabButton.Click += delegate { CreateNewTab(); FocusAddress(); };
-            _toolTip.SetToolTip(newTabButton, "新建标签页（Ctrl+T）");
-            var tabLayout = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount = 2,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty,
-                BackColor = _tabStrip.BackColor
-            };
-            tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34F));
-            tabLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            tabLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            tabLayout.Controls.Add(_tabViewport, 0, 0);
-            tabLayout.Controls.Add(newTabButton, 1, 0);
-            tabLayout.Controls.Add(_tabScrollBar, 0, 1);
-            tabLayout.SetColumnSpan(_tabScrollBar, 2);
-            _tabStrip.Controls.Add(tabLayout);
+            BuildTabSidebar();
 
             _viewport.Dock = DockStyle.Fill;
             _viewport.BackColor = Color.FromArgb(244, 248, 253);
@@ -459,11 +455,167 @@ namespace ChenmuBrowser
             _statusLabel.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point);
             _statusPanel.Controls.Add(_statusLabel);
 
-            Controls.Add(_viewport);
-            Controls.Add(_statusPanel);
-            Controls.Add(_header);
-            Controls.Add(_tabStrip);
+            _browserSurface.Dock = DockStyle.Fill;
+            _browserSurface.BackColor = Color.White;
+            _browserSurface.Controls.Add(_viewport);
+            _browserSurface.Controls.Add(_statusPanel);
+            _browserSurface.Controls.Add(_header);
+            _rootLayout.Controls.Add(_browserSurface, 1, 0);
+            Controls.Add(_rootLayout);
             CreateNewTab();
+        }
+
+        private void BuildTabSidebar()
+        {
+            var scale = Math.Max(1F, DeviceDpi / 96F);
+            var collapsedWidth = Math.Max(8, (int)Math.Round(10F * scale));
+            var scrollWidth = Math.Max(14, (int)Math.Round(16F * scale));
+
+            _rootLayout.Dock = DockStyle.Fill;
+            _rootLayout.Margin = Padding.Empty;
+            _rootLayout.Padding = Padding.Empty;
+            _rootLayout.ColumnCount = 2;
+            _rootLayout.RowCount = 1;
+            _rootLayout.BackColor = Color.White;
+            _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, collapsedWidth));
+            _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+            _tabSidebarHost.Dock = DockStyle.Fill;
+            _tabSidebarHost.BackColor = Color.FromArgb(249, 251, 255);
+            _tabSidebarContent.Dock = DockStyle.Fill;
+            _tabSidebarContent.Visible = false;
+            _tabSidebarContent.BackColor = Color.FromArgb(249, 251, 255);
+            _tabSidebarContent.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (var pen = new Pen(Color.FromArgb(226, 233, 241)))
+                    e.Graphics.DrawLine(pen, _tabSidebarContent.Width - 1, 0,
+                        _tabSidebarContent.Width - 1, _tabSidebarContent.Height);
+            };
+
+            _tabSidebarEdge.Dock = DockStyle.Left;
+            _tabSidebarEdge.Width = collapsedWidth;
+            _tabSidebarEdge.BackColor = Color.FromArgb(239, 245, 252);
+            _tabSidebarEdge.Cursor = Cursors.Hand;
+            _tabSidebarEdge.AccessibleName = "悬停展开标签栏";
+            _tabSidebarEdge.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                var markerHeight = Math.Max(24, (int)Math.Round(30F * scale));
+                var markerWidth = Math.Max(2, (int)Math.Round(2F * scale));
+                var marker = new Rectangle(
+                    Math.Max(0, (_tabSidebarEdge.ClientSize.Width - markerWidth) / 2),
+                    Math.Max(0, (_tabSidebarEdge.ClientSize.Height - markerHeight) / 2),
+                    markerWidth, Math.Min(markerHeight, _tabSidebarEdge.ClientSize.Height));
+                using (var brush = new SolidBrush(Color.FromArgb(122, 151, 183)))
+                    e.Graphics.FillRectangle(brush, marker);
+            };
+            _tabSidebarHost.Controls.Add(_tabSidebarContent);
+            _tabSidebarHost.Controls.Add(_tabSidebarEdge);
+            _tabSidebarHost.MouseEnter += delegate { SetTabSidebarExpanded(true); };
+            _tabSidebarEdge.MouseEnter += delegate { SetTabSidebarExpanded(true); };
+
+            var sidebarLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 2,
+                Margin = Padding.Empty,
+                Padding = new Padding((int)Math.Round(4F * scale), (int)Math.Round(7F * scale),
+                    (int)Math.Round(3F * scale), (int)Math.Round(5F * scale)),
+                BackColor = _tabSidebarContent.BackColor
+            };
+            sidebarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            sidebarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scrollWidth));
+            sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, Math.Max(40, (int)Math.Round(44F * scale))));
+
+            _tabViewport.Dock = DockStyle.Fill;
+            _tabViewport.Margin = Padding.Empty;
+            _tabViewport.BackColor = _tabSidebarContent.BackColor;
+            _tabHeaders.Dock = DockStyle.None;
+            _tabHeaders.AutoScroll = false;
+            _tabHeaders.WrapContents = false;
+            _tabHeaders.FlowDirection = FlowDirection.TopDown;
+            _tabHeaders.Margin = Padding.Empty;
+            _tabHeaders.Padding = Padding.Empty;
+            _tabHeaders.Location = Point.Empty;
+            _tabHeaders.ControlAdded += delegate { UpdateTabSidebar(); };
+            _tabHeaders.ControlRemoved += delegate { UpdateTabSidebar(); };
+            _tabViewport.Controls.Add(_tabHeaders);
+            _tabViewport.SizeChanged += delegate { UpdateTabSidebar(); };
+
+            _tabScrollBar.Dock = DockStyle.Fill;
+            _tabScrollBar.Margin = Padding.Empty;
+            _tabScrollBar.Visible = false;
+            _tabScrollBar.Minimum = 0;
+            _tabScrollBar.SmallChange = Math.Max(1, (int)Math.Round(40F * scale));
+            _tabScrollBar.LargeChange = 1;
+            _tabScrollBar.ValueChanged += delegate { PositionTabHeaders(); };
+
+            var newTabButton = new Button
+            {
+                Text = "＋ 新标签页",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(2, (int)Math.Round(3F * scale), 2, 0),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(249, 251, 255),
+                ForeColor = Color.FromArgb(66, 82, 100),
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding((int)Math.Round(8F * scale), 0, 0, 0),
+                Cursor = Cursors.Hand,
+                TabStop = false,
+                AccessibleName = "新建标签页"
+            };
+            newTabButton.FlatAppearance.BorderSize = 0;
+            newTabButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(239, 244, 250);
+            newTabButton.Click += delegate { CreateNewTab(); FocusAddress(); };
+            _toolTip.SetToolTip(newTabButton, "新建标签页（Ctrl+T）");
+
+            sidebarLayout.Controls.Add(_tabViewport, 0, 0);
+            sidebarLayout.Controls.Add(_tabScrollBar, 1, 0);
+            sidebarLayout.Controls.Add(newTabButton, 0, 1);
+            sidebarLayout.SetColumnSpan(newTabButton, 2);
+            _tabSidebarContent.Controls.Add(sidebarLayout);
+            _rootLayout.Controls.Add(_tabSidebarHost, 0, 0);
+
+            _tabSidebarHoverTimer.Interval = 160;
+            _tabSidebarHoverTimer.Tick += delegate
+            {
+                if (!_tabSidebarExpanded || !_tabSidebarHost.IsHandleCreated)
+                    return;
+                var bounds = _tabSidebarHost.RectangleToScreen(_tabSidebarHost.ClientRectangle);
+                if (bounds.Contains(Cursor.Position))
+                    _tabSidebarLeaveTicks = 0;
+                else if (++_tabSidebarLeaveTicks >= 2)
+                    SetTabSidebarExpanded(false);
+            };
+        }
+
+        private void SetTabSidebarExpanded(bool expanded)
+        {
+            if (_tabSidebarExpanded == expanded || _rootLayout.ColumnStyles.Count == 0)
+                return;
+            _tabSidebarExpanded = expanded;
+            _tabSidebarLeaveTicks = 0;
+            var scale = Math.Max(1F, DeviceDpi / 96F);
+            var width = (int)Math.Round((expanded ? 236F : 10F) * scale);
+            _rootLayout.SuspendLayout();
+            _tabSidebarContent.Visible = expanded;
+            _tabSidebarEdge.Width = Math.Max(8, (int)Math.Round(10F * scale));
+            _rootLayout.ColumnStyles[0].Width = width;
+            _rootLayout.ResumeLayout(true);
+            if (expanded)
+            {
+                _tabSidebarHoverTimer.Start();
+                UpdateTabSidebar();
+                EnsureTabVisible(_activeTab);
+            }
+            else
+                _tabSidebarHoverTimer.Stop();
+#if DEBUG
+            UpdateVisualTestStatus();
+#endif
         }
 
         private void CreateNewTab()
@@ -471,9 +623,9 @@ namespace ChenmuBrowser
             var tab = new BrowserTab { Title = "新标签页", IsHome = true };
             var header = new Panel
             {
-                Width = 196,
-                Height = 32,
-                Margin = new Padding(2, 1, 4, 1),
+                Width = 214,
+                Height = 38,
+                Margin = new Padding(3, 2, 3, 2),
                 BackColor = Color.FromArgb(243, 246, 250),
                 Tag = tab
             };
@@ -510,6 +662,7 @@ namespace ChenmuBrowser
             titleButton.FlatAppearance.BorderSize = 0;
             titleButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(241, 245, 249);
             titleButton.Click += delegate { SwitchToTab(tab); };
+            _toolTip.SetToolTip(titleButton, tab.Title);
             var closeButton = new Button
             {
                 Dock = DockStyle.Fill,
@@ -533,7 +686,7 @@ namespace ChenmuBrowser
             tab.Header = header;
             _tabs.Add(tab);
             _tabHeaders.Controls.Add(header);
-            UpdateTabStripHeight();
+            UpdateTabSidebar();
             SwitchToTab(tab);
             FocusAddress();
         }
@@ -546,7 +699,7 @@ namespace ChenmuBrowser
             var wasActive = tab == _activeTab;
             _tabs.RemoveAt(index);
             _tabHeaders.Controls.Remove(tab.Header);
-            UpdateTabStripHeight();
+            UpdateTabSidebar();
             if (tab.Header != null)
                 tab.Header.Dispose();
             if (tab.WebView != null)
@@ -592,7 +745,7 @@ namespace ChenmuBrowser
                 _homeView.BringToFront();
                 _addressBox.Text = String.Empty;
                 _statusLabel.Text = "就绪";
-                Text = "新标签页 - CHENMU Browser";
+                Text = "新标签页 - CHENMU Browser" + (_isIsolatedTest ? "（隔离测试）" : String.Empty);
             }
             else
             {
@@ -606,44 +759,40 @@ namespace ChenmuBrowser
             EnsureTabVisible(tab);
         }
 
-        private void UpdateTabStripHeight()
+        private void UpdateTabSidebar()
         {
-            if (_tabStrip.IsDisposed || _tabHeaders.IsDisposed || _tabViewport.IsDisposed || _updatingTabStrip)
+            if (_tabSidebarHost.IsDisposed || _tabHeaders.IsDisposed || _tabViewport.IsDisposed || _updatingTabSidebar)
                 return;
-            _updatingTabStrip = true;
+            _updatingTabSidebar = true;
             try
             {
-                long requiredWidth = _tabHeaders.Padding.Horizontal;
-                var requiredContentHeight = 0;
-                foreach (Control header in _tabHeaders.Controls)
+                var viewportWidth = Math.Max(0, _tabViewport.ClientSize.Width);
+                var viewportHeight = Math.Max(0, _tabViewport.ClientSize.Height);
+                if (!_tabSidebarContent.Visible || viewportWidth == 0 || viewportHeight == 0)
                 {
-                    requiredWidth += header.Width + header.Margin.Horizontal;
-                    requiredContentHeight = Math.Max(requiredContentHeight, header.Height + header.Margin.Vertical);
+                    _tabScrollBar.Visible = false;
+                    PositionTabHeaders();
+                    return;
                 }
 
-                var scale = _tabStrip.DeviceDpi / 96F;
-                var headerLaneHeight = Math.Max(requiredContentHeight, (int)Math.Round(34F * scale));
-                var viewportWidth = Math.Max(0, _tabViewport.ClientSize.Width);
-                var hasHorizontalOverflow = requiredWidth > viewportWidth;
-                _tabScrollBar.Visible = hasHorizontalOverflow;
-                _tabViewport.MinimumSize = new Size(0, headerLaneHeight);
-                _tabHeaders.Height = headerLaneHeight;
-                _tabHeaders.Width = (int)Math.Min(Int32.MaxValue / 2L, Math.Max(requiredWidth, viewportWidth));
+                var scale = Math.Max(1F, _tabSidebarHost.DeviceDpi / 96F);
+                foreach (Control header in _tabHeaders.Controls)
+                    header.Width = Math.Max(1, viewportWidth - header.Margin.Horizontal);
+                _tabHeaders.PerformLayout();
 
-                var scrollBarHeight = hasHorizontalOverflow
-                    ? Math.Max(_tabScrollBar.GetPreferredSize(Size.Empty).Height, (int)Math.Round(14F * scale))
-                    : 0;
-                var targetHeight = _tabStrip.Padding.Vertical + headerLaneHeight + scrollBarHeight;
-                if (_tabStrip.Height != targetHeight)
-                    _tabStrip.Height = targetHeight;
-                _tabStrip.PerformLayout();
+                long requiredHeight = _tabHeaders.Padding.Vertical;
+                foreach (Control header in _tabHeaders.Controls)
+                    requiredHeight += header.Height + header.Margin.Vertical;
+                var maxScroll = Math.Max(0L, requiredHeight - viewportHeight);
+                _tabScrollBar.Visible = maxScroll > 0;
+                _tabHeaders.Width = viewportWidth;
+                _tabHeaders.Height = (int)Math.Min(Int32.MaxValue / 2L, Math.Max(requiredHeight, viewportHeight));
 
-                var maxScroll = Math.Max(0L, (long)_tabHeaders.Width - viewportWidth);
-                var largeChange = Math.Max(1, viewportWidth);
+                var largeChange = Math.Max(1, viewportHeight);
+                var scrollRange = (int)Math.Min(Int32.MaxValue - (long)largeChange, maxScroll);
                 _tabScrollBar.Minimum = 0;
                 _tabScrollBar.SmallChange = Math.Max(1, (int)Math.Round(40F * scale));
                 _tabScrollBar.LargeChange = largeChange;
-                var scrollRange = (int)Math.Min(Int32.MaxValue - (long)largeChange, maxScroll);
                 _tabScrollBar.Maximum = scrollRange + largeChange - 1;
                 if (_tabScrollBar.Value > scrollRange)
                     _tabScrollBar.Value = scrollRange;
@@ -651,7 +800,7 @@ namespace ChenmuBrowser
             }
             finally
             {
-                _updatingTabStrip = false;
+                _updatingTabSidebar = false;
             }
         }
 
@@ -659,25 +808,25 @@ namespace ChenmuBrowser
         {
             if (_tabHeaders.IsDisposed)
                 return;
-            _tabHeaders.Location = new Point(-_tabScrollBar.Value, 0);
+            _tabHeaders.Location = new Point(0, -_tabScrollBar.Value);
         }
 
         private void EnsureTabVisible(BrowserTab tab)
         {
             if (tab == null || tab.Header == null || tab.Header.IsDisposed || !_tabScrollBar.Visible)
                 return;
-            var viewportWidth = _tabViewport.ClientSize.Width;
-            if (viewportWidth <= 0)
+            var viewportHeight = _tabViewport.ClientSize.Height;
+            if (viewportHeight <= 0)
                 return;
 
             _tabHeaders.PerformLayout();
-            var visibleLeft = tab.Header.Left - tab.Header.Margin.Left;
-            var visibleRight = tab.Header.Right + tab.Header.Margin.Right;
+            var visibleTop = tab.Header.Top - tab.Header.Margin.Top;
+            var visibleBottom = tab.Header.Bottom + tab.Header.Margin.Bottom;
             var target = _tabScrollBar.Value;
-            if (visibleLeft < target)
-                target = visibleLeft;
-            else if (visibleRight > target + viewportWidth)
-                target = visibleRight - viewportWidth;
+            if (visibleTop < target)
+                target = visibleTop;
+            else if (visibleBottom > target + viewportHeight)
+                target = visibleBottom - viewportHeight;
 
             var maxScroll = Math.Max(0, _tabScrollBar.Maximum - _tabScrollBar.LargeChange + 1);
             target = Math.Max(0, Math.Min(target, maxScroll));
@@ -704,6 +853,7 @@ namespace ChenmuBrowser
                     titleButton.Text = tab.Title;
                     titleButton.BackColor = tab.Header.BackColor;
                     titleButton.ForeColor = active ? Color.FromArgb(35, 48, 63) : Color.FromArgb(75, 88, 103);
+                    _toolTip.SetToolTip(titleButton, tab.Title);
                 }
                 if (closeButton != null)
                     closeButton.BackColor = tab.Header.BackColor;
@@ -1053,13 +1203,13 @@ namespace ChenmuBrowser
             searchLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             var searchButton = new RoundedButton
             {
-                Text = "⌕",
+                Text = "\uE721",
                 Dock = DockStyle.Fill,
                 Margin = new Padding(1),
                 CornerRadius = 15,
                 BackColor = Color.White,
                 ForeColor = Color.FromArgb(61, 111, 170),
-                Font = new Font("Segoe UI Symbol", 19F, FontStyle.Regular, GraphicsUnit.Point),
+                Font = new Font("Segoe MDL2 Assets", 16F, FontStyle.Regular, GraphicsUnit.Point),
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand,
                 TabStop = false,
@@ -2091,7 +2241,7 @@ namespace ChenmuBrowser
             tab.Title = title;
             UpdateTabHeaders();
             if (tab == _activeTab)
-                Text = title + " - CHENMU Browser";
+                Text = title + " - CHENMU Browser" + (_isIsolatedTest ? "（隔离测试）" : String.Empty);
         }
 
         private void ShowRuntimeProblem(BrowserTab tab, Exception ex, string attemptedUrl)
