@@ -59,4 +59,4 @@ jobs:
             "dist/CHENMU-Browser-source.zip" `
             "dist/SHA256SUMS.txt" `
             --title "CHENMU Browser $env:GITHUB_REF_NAME" `
-            --generate-notes
+            --notes-file RELEASE_NOTES.md
