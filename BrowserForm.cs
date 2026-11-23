@@ -20,6 +20,11 @@ namespace ChenmuBrowser
         private const int DwmwaBorderColor = 34;
         private const int DwmwaCaptionColor = 35;
         private const int DwmwaTextColor = 36;
+        private const uint SwpNoSize = 0x0001;
+        private const uint SwpNoMove = 0x0002;
+        private const uint SwpNoZOrder = 0x0004;
+        private const uint SwpNoActivate = 0x0010;
+        private const uint SwpFrameChanged = 0x0020;
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         private struct RtlOsVersionInfo
         {
@@ -36,12 +41,18 @@ namespace ChenmuBrowser
         private static extern IntPtr SendMessage(IntPtr hWnd, int message, IntPtr wParam, string lParam);
         [DllImport("dwmapi.dll", PreserveSig = true)]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+            int x, int y, int cx, int cy, uint flags);
         [DllImport("ntdll.dll", EntryPoint = "RtlGetVersion", ExactSpelling = true)]
         private static extern int RtlGetVersion(ref RtlOsVersionInfo versionInfo);
 
         private readonly Panel _header = new Panel();
         private readonly Panel _tabStrip = new Panel();
+        private readonly Panel _tabViewport = new Panel();
         private readonly FlowLayoutPanel _tabHeaders = new FlowLayoutPanel();
+        private readonly HScrollBar _tabScrollBar = new HScrollBar();
         private readonly TextBox _addressBox = new TextBox();
         private readonly Panel _viewport = new Panel();
         private readonly Panel _statusPanel = new Panel();
@@ -58,6 +69,7 @@ namespace ChenmuBrowser
         private WebView2 _webView;
         private readonly List<BrowserTab> _tabs = new List<BrowserTab>();
         private BrowserTab _activeTab;
+        private bool _updatingTabStrip;
         private Task<CoreWebView2Environment> _webViewEnvironmentTask;
         private readonly List<DownloadEntry> _downloads = new List<DownloadEntry>();
         private bool _blockTrackers = true;
@@ -94,6 +106,7 @@ namespace ChenmuBrowser
             Shown += async delegate
             {
                 ApplyWindowCaptionColors();
+                UpdateTabStripHeight();
                 await CheckForUpdatesAsync(false);
             };
         }
@@ -115,6 +128,8 @@ namespace ChenmuBrowser
                     DwmSetWindowAttribute(Handle, DwmwaTextColor, ref text, sizeof(int));
                     DwmSetWindowAttribute(Handle, DwmwaBorderColor, ref caption, sizeof(int));
                 }
+                SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
+                    SwpNoSize | SwpNoMove | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
             }
             catch { }
         }
@@ -170,6 +185,39 @@ namespace ChenmuBrowser
                 setCue();
             else
                 textBox.HandleCreated += delegate { setCue(); };
+        }
+
+        private static Panel CreateCenteredTextBoxHost(TextBox textBox, Padding inset)
+        {
+            textBox.AutoSize = false;
+            textBox.Dock = DockStyle.None;
+            textBox.Margin = Padding.Empty;
+            var host = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                Padding = inset,
+                BackColor = Color.White
+            };
+            Action alignTextBox = delegate
+            {
+                if (host.IsDisposed || textBox.IsDisposed)
+                    return;
+                var innerHeight = Math.Max(0, host.ClientSize.Height - host.Padding.Vertical);
+                var textHeight = Math.Max(1, textBox.PreferredHeight);
+                textBox.SetBounds(host.Padding.Left,
+                    host.Padding.Top + Math.Max(0, (innerHeight - textHeight) / 2),
+                    Math.Max(0, host.ClientSize.Width - host.Padding.Horizontal), textHeight);
+            };
+            host.Controls.Add(textBox);
+            host.SizeChanged += delegate { alignTextBox(); };
+            textBox.FontChanged += delegate { alignTextBox(); };
+            host.HandleCreated += delegate
+            {
+                if (host.IsHandleCreated)
+                    host.BeginInvoke((MethodInvoker)delegate { alignTextBox(); });
+            };
+            return host;
         }
 
         private void BuildInterface()
@@ -245,12 +293,13 @@ namespace ChenmuBrowser
                 ForeColor = Color.FromArgb(105, 120, 137)
             };
             _addressBox.BorderStyle = BorderStyle.None;
-            _addressBox.Dock = DockStyle.Fill;
+            _addressBox.BackColor = Color.White;
             _addressBox.MaxLength = 4096;
             _addressBox.Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Regular, GraphicsUnit.Point);
             _addressBox.KeyDown += AddressBox_KeyDown;
             SetCueBanner(_addressBox, "输入网址或搜索关键词");
             _toolTip.SetToolTip(_addressBox, "输入网址或搜索关键词；按 Ctrl+L 可快速定位到这里");
+            var addressBoxHost = CreateCenteredTextBoxHost(_addressBox, new Padding(5, 0, 4, 0));
             var addressClearButton = new Button
             {
                 Text = "×",
@@ -273,7 +322,7 @@ namespace ChenmuBrowser
             _addressBox.Leave += delegate { addressFrame.BorderColor = Color.FromArgb(220, 227, 235); };
             _toolTip.SetToolTip(addressClearButton, "清空地址栏");
             addressLayout.Controls.Add(addressGlyph, 0, 0);
-            addressLayout.Controls.Add(_addressBox, 1, 0);
+            addressLayout.Controls.Add(addressBoxHost, 1, 0);
             addressLayout.Controls.Add(addressClearButton, 2, 0);
             addressFrame.Controls.Add(addressLayout);
             chrome.Controls.Add(addressFrame, 4, 0);
@@ -333,19 +382,32 @@ namespace ChenmuBrowser
             _tabStrip.Height = 40;
             _tabStrip.Padding = new Padding(7, 3, 7, 3);
             _tabStrip.BackColor = _header.BackColor;
-            _tabHeaders.Dock = DockStyle.Fill;
-            _tabHeaders.AutoScroll = true;
+            _tabViewport.Dock = DockStyle.Fill;
+            _tabViewport.Margin = Padding.Empty;
+            _tabViewport.BackColor = _tabStrip.BackColor;
+            _tabHeaders.Dock = DockStyle.None;
+            _tabHeaders.AutoScroll = false;
             _tabHeaders.WrapContents = false;
             _tabHeaders.FlowDirection = FlowDirection.LeftToRight;
             _tabHeaders.Margin = Padding.Empty;
-            _tabHeaders.SizeChanged += delegate { UpdateTabStripHeight(); };
+            _tabHeaders.Location = Point.Empty;
+            _tabHeaders.Height = 34;
             _tabHeaders.ControlAdded += delegate { UpdateTabStripHeight(); };
             _tabHeaders.ControlRemoved += delegate { UpdateTabStripHeight(); };
+            _tabViewport.Controls.Add(_tabHeaders);
+            _tabViewport.SizeChanged += delegate { UpdateTabStripHeight(); };
+            _tabScrollBar.Dock = DockStyle.Fill;
+            _tabScrollBar.Margin = Padding.Empty;
+            _tabScrollBar.Visible = false;
+            _tabScrollBar.SmallChange = 40;
+            _tabScrollBar.LargeChange = 1;
+            _tabScrollBar.ValueChanged += delegate { PositionTabHeaders(); };
             var newTabButton = new Button
             {
                 Text = "+",
-                Dock = DockStyle.Right,
+                Dock = DockStyle.Fill,
                 Width = 34,
+                Margin = Padding.Empty,
                 FlatStyle = FlatStyle.Flat,
                 BackColor = _tabStrip.BackColor,
                 ForeColor = Color.FromArgb(66, 82, 100),
@@ -357,8 +419,24 @@ namespace ChenmuBrowser
             newTabButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(239, 244, 250);
             newTabButton.Click += delegate { CreateNewTab(); FocusAddress(); };
             _toolTip.SetToolTip(newTabButton, "新建标签页（Ctrl+T）");
-            _tabStrip.Controls.Add(_tabHeaders);
-            _tabStrip.Controls.Add(newTabButton);
+            var tabLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 2,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = _tabStrip.BackColor
+            };
+            tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34F));
+            tabLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            tabLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            tabLayout.Controls.Add(_tabViewport, 0, 0);
+            tabLayout.Controls.Add(newTabButton, 1, 0);
+            tabLayout.Controls.Add(_tabScrollBar, 0, 1);
+            tabLayout.SetColumnSpan(_tabScrollBar, 2);
+            _tabStrip.Controls.Add(tabLayout);
 
             _viewport.Dock = DockStyle.Fill;
             _viewport.BackColor = Color.FromArgb(244, 248, 253);
@@ -489,7 +567,10 @@ namespace ChenmuBrowser
             if (wasActive)
                 SwitchToTab(_tabs[Math.Min(index, _tabs.Count - 1)]);
             else
+            {
                 UpdateTabHeaders();
+                EnsureTabVisible(_activeTab);
+            }
         }
 
         private void SwitchToTab(BrowserTab tab)
@@ -522,29 +603,86 @@ namespace ChenmuBrowser
                 UpdateWindowTitle(tab.WebView.CoreWebView2);
             }
             UpdateTabHeaders();
+            EnsureTabVisible(tab);
         }
 
         private void UpdateTabStripHeight()
         {
-            if (_tabStrip.IsDisposed || _tabHeaders.IsDisposed)
+            if (_tabStrip.IsDisposed || _tabHeaders.IsDisposed || _tabViewport.IsDisposed || _updatingTabStrip)
+                return;
+            _updatingTabStrip = true;
+            try
+            {
+                long requiredWidth = _tabHeaders.Padding.Horizontal;
+                var requiredContentHeight = 0;
+                foreach (Control header in _tabHeaders.Controls)
+                {
+                    requiredWidth += header.Width + header.Margin.Horizontal;
+                    requiredContentHeight = Math.Max(requiredContentHeight, header.Height + header.Margin.Vertical);
+                }
+
+                var scale = _tabStrip.DeviceDpi / 96F;
+                var headerLaneHeight = Math.Max(requiredContentHeight, (int)Math.Round(34F * scale));
+                var viewportWidth = Math.Max(0, _tabViewport.ClientSize.Width);
+                var hasHorizontalOverflow = requiredWidth > viewportWidth;
+                _tabScrollBar.Visible = hasHorizontalOverflow;
+                _tabViewport.MinimumSize = new Size(0, headerLaneHeight);
+                _tabHeaders.Height = headerLaneHeight;
+                _tabHeaders.Width = (int)Math.Min(Int32.MaxValue / 2L, Math.Max(requiredWidth, viewportWidth));
+
+                var scrollBarHeight = hasHorizontalOverflow
+                    ? Math.Max(_tabScrollBar.GetPreferredSize(Size.Empty).Height, (int)Math.Round(14F * scale))
+                    : 0;
+                var targetHeight = _tabStrip.Padding.Vertical + headerLaneHeight + scrollBarHeight;
+                if (_tabStrip.Height != targetHeight)
+                    _tabStrip.Height = targetHeight;
+                _tabStrip.PerformLayout();
+
+                var maxScroll = Math.Max(0L, (long)_tabHeaders.Width - viewportWidth);
+                var largeChange = Math.Max(1, viewportWidth);
+                _tabScrollBar.Minimum = 0;
+                _tabScrollBar.SmallChange = Math.Max(1, (int)Math.Round(40F * scale));
+                _tabScrollBar.LargeChange = largeChange;
+                var scrollRange = (int)Math.Min(Int32.MaxValue - (long)largeChange, maxScroll);
+                _tabScrollBar.Maximum = scrollRange + largeChange - 1;
+                if (_tabScrollBar.Value > scrollRange)
+                    _tabScrollBar.Value = scrollRange;
+                PositionTabHeaders();
+            }
+            finally
+            {
+                _updatingTabStrip = false;
+            }
+        }
+
+        private void PositionTabHeaders()
+        {
+            if (_tabHeaders.IsDisposed)
+                return;
+            _tabHeaders.Location = new Point(-_tabScrollBar.Value, 0);
+        }
+
+        private void EnsureTabVisible(BrowserTab tab)
+        {
+            if (tab == null || tab.Header == null || tab.Header.IsDisposed || !_tabScrollBar.Visible)
+                return;
+            var viewportWidth = _tabViewport.ClientSize.Width;
+            if (viewportWidth <= 0)
                 return;
 
-            long requiredWidth = _tabHeaders.Padding.Horizontal;
-            var requiredContentHeight = 0;
-            foreach (Control header in _tabHeaders.Controls)
-            {
-                requiredWidth += header.Width + header.Margin.Horizontal;
-                requiredContentHeight = Math.Max(requiredContentHeight, header.Height + header.Margin.Vertical);
-            }
+            _tabHeaders.PerformLayout();
+            var visibleLeft = tab.Header.Left - tab.Header.Margin.Left;
+            var visibleRight = tab.Header.Right + tab.Header.Margin.Right;
+            var target = _tabScrollBar.Value;
+            if (visibleLeft < target)
+                target = visibleLeft;
+            else if (visibleRight > target + viewportWidth)
+                target = visibleRight - viewportWidth;
 
-            var baseHeight = Math.Max(40, _tabStrip.Padding.Vertical + requiredContentHeight);
-            var hasHorizontalOverflow = requiredWidth > _tabHeaders.ClientSize.Width;
-            var scrollBarReserve = hasHorizontalOverflow
-                ? Math.Max(16, SystemInformation.HorizontalScrollBarHeight) + 2
-                : 0;
-            var targetHeight = baseHeight + scrollBarReserve;
-            if (_tabStrip.Height != targetHeight)
-                _tabStrip.Height = targetHeight;
+            var maxScroll = Math.Max(0, _tabScrollBar.Maximum - _tabScrollBar.LargeChange + 1);
+            target = Math.Max(0, Math.Min(target, maxScroll));
+            if (_tabScrollBar.Value != target)
+                _tabScrollBar.Value = target;
         }
 
         private void UpdateTabHeaders()
@@ -844,31 +982,33 @@ namespace ChenmuBrowser
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Anchor = AnchorStyles.None,
                 ColumnCount = 1,
-                RowCount = 2,
+                RowCount = 1,
                 BackColor = Color.Transparent,
                 Margin = new Padding(0)
             };
             hero.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             hero.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            hero.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            var brandRow = new FlowLayoutPanel
+            var brandRow = new TableLayoutPanel
             {
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Anchor = AnchorStyles.None,
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
+                ColumnCount = 2,
+                RowCount = 1,
                 BackColor = Color.Transparent,
                 Margin = new Padding(0),
                 Padding = new Padding(0)
             };
+            brandRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76F));
+            brandRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            brandRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             var brandLogo = new PictureBox
             {
                 Image = LoadBrandMark(),
                 SizeMode = PictureBoxSizeMode.Zoom,
-                Size = new Size(44, 44),
+                Size = new Size(64, 64),
                 BackColor = Color.Transparent,
-                Margin = new Padding(0, 0, 10, 0)
+                Margin = new Padding(0, 0, 12, 0)
             };
             if (brandLogo.Image == null)
                 brandLogo.Visible = false;
@@ -879,22 +1019,12 @@ namespace ChenmuBrowser
                 TextAlign = ContentAlignment.MiddleLeft,
                 Font = new Font("Microsoft YaHei UI", 25F, FontStyle.Bold, GraphicsUnit.Point),
                 ForeColor = Color.FromArgb(38, 58, 80),
-                Margin = new Padding(0, 1, 0, 0)
+                Anchor = AnchorStyles.Left,
+                Margin = Padding.Empty
             };
-            brandRow.Controls.Add(brandLogo);
-            brandRow.Controls.Add(title);
-            var hint = new Label
-            {
-                Text = "简约、轻快、安心地浏览",
-                AutoSize = true,
-                Anchor = AnchorStyles.None,
-                TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(112, 126, 143),
-                Margin = new Padding(0, 4, 0, 0)
-            };
+            brandRow.Controls.Add(brandLogo, 0, 0);
+            brandRow.Controls.Add(title, 1, 0);
             hero.Controls.Add(brandRow, 0, 0);
-            hero.Controls.Add(hint, 0, 1);
             layout.Controls.Add(hero, 0, 1);
 
             var searchFrame = new RoundedPanel
@@ -943,12 +1073,12 @@ namespace ChenmuBrowser
             _homeSearchBox = new TextBox
             {
                 BorderStyle = BorderStyle.None,
-                Anchor = AnchorStyles.Left | AnchorStyles.Right,
-                Height = 30,
                 Font = new Font("Microsoft YaHei UI", 11F, FontStyle.Regular, GraphicsUnit.Point),
                 ForeColor = Color.FromArgb(48, 58, 70),
-                Margin = new Padding(5, 0, 4, 0)
+                BackColor = Color.White,
+                Margin = Padding.Empty
             };
+            var homeSearchBoxHost = CreateCenteredTextBoxHost(_homeSearchBox, new Padding(5, 0, 4, 0));
             SetCueBanner(_homeSearchBox, "搜索网页，或直接输入网址");
             _homeSearchBox.KeyDown += delegate(object sender, KeyEventArgs e)
             {
@@ -1003,7 +1133,7 @@ namespace ChenmuBrowser
             _toolTip.SetToolTip(_homeSearchEngineButton, "选择搜索引擎");
 
             searchLayout.Controls.Add(searchButton, 0, 0);
-            searchLayout.Controls.Add(_homeSearchBox, 1, 0);
+            searchLayout.Controls.Add(homeSearchBoxHost, 1, 0);
             searchLayout.Controls.Add(homeSearchClearButton, 2, 0);
             searchLayout.Controls.Add(_homeSearchEngineButton, 3, 0);
             searchFrame.Controls.Add(searchLayout);
@@ -1036,16 +1166,21 @@ namespace ChenmuBrowser
                     ? new Padding(20, 8, 20, 8)
                     : new Padding(32, 18, 32, 14);
                 var availableWidth = Math.Max(1, layout.ClientSize.Width - layout.Padding.Horizontal);
+                var logoSize = (int)Math.Round(64F * scale);
+                brandLogo.Size = new Size(logoSize, logoSize);
+                brandLogo.Margin = new Padding(0, 0, (int)Math.Round(12F * scale), 0);
+                brandRow.ColumnStyles[0].Width = (float)Math.Round(76F * scale);
                 searchFrame.Width = Math.Min((int)Math.Round(760 * scale), availableWidth);
                 searchFrame.Height = (int)Math.Round((compact ? 56 : 62) * scale);
-                _homeSearchBox.Height = (int)Math.Round((compact ? 30 : 32) * scale);
                 layout.RowStyles[1].SizeType = SizeType.Absolute;
-                layout.RowStyles[1].Height = (int)Math.Round((compact ? 74 : 86) * scale);
+                layout.RowStyles[1].Height = (int)Math.Round((compact ? 82 : 92) * scale);
                 layout.RowStyles[2].SizeType = SizeType.Absolute;
                 layout.RowStyles[2].Height = searchFrame.Height + (int)Math.Round(10 * scale);
                 layout.RowStyles[3].SizeType = SizeType.Absolute;
                 layout.RowStyles[3].Height = (int)Math.Round((compact ? 84 : 92) * scale);
                 title.Font = new Font("Microsoft YaHei UI", compact ? 22F : 25F, FontStyle.Bold, GraphicsUnit.Point);
+                brandRow.PerformLayout();
+                homeSearchBoxHost.PerformLayout();
                 layout.PerformLayout();
             };
             layout.SizeChanged += delegate { updateHomeLayout(); };
