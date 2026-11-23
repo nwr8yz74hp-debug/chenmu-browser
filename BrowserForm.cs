@@ -763,36 +763,19 @@ namespace ChenmuBrowser
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 2,
+                RowCount = 6,
                 Padding = new Padding(32, 20, 32, 16),
                 BackColor = Color.Transparent
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 70F));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-            var contentArea = new Panel
-            {
-                Dock = DockStyle.Fill,
-                BackColor = Color.Transparent,
-                Margin = Padding.Empty
-            };
-            var contentStack = new TableLayoutPanel
-            {
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = 1,
-                RowCount = 3,
-                BackColor = Color.Transparent,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty
-            };
-            contentStack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            contentStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            contentStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            contentStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            contentArea.Controls.Add(contentStack);
-            layout.Controls.Add(contentArea, 0, 0);
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 30F));
+            layout.Controls.Add(new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Margin = Padding.Empty }, 0, 0);
+            layout.Controls.Add(new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Margin = Padding.Empty }, 0, 5);
 
             var hero = new TableLayoutPanel
             {
@@ -851,7 +834,7 @@ namespace ChenmuBrowser
             };
             hero.Controls.Add(brandRow, 0, 0);
             hero.Controls.Add(hint, 0, 1);
-            contentStack.Controls.Add(hero, 0, 0);
+            layout.Controls.Add(hero, 0, 1);
 
             var searchFrame = new RoundedPanel
             {
@@ -959,7 +942,7 @@ namespace ChenmuBrowser
             searchLayout.Controls.Add(homeSearchClearButton, 2, 0);
             searchLayout.Controls.Add(searchButton, 3, 0);
             searchFrame.Controls.Add(searchLayout);
-            contentStack.Controls.Add(searchFrame, 0, 1);
+            layout.Controls.Add(searchFrame, 0, 2);
 
             var shortcuts = new FlowLayoutPanel
             {
@@ -975,7 +958,7 @@ namespace ChenmuBrowser
             shortcuts.Controls.Add(CreateShortcutCard("b", "Bing", Color.FromArgb(0, 120, 212), delegate { NavigateFromPage("https://www.bing.com/"); }));
             shortcuts.Controls.Add(CreateShortcutCard("百", "百度", Color.FromArgb(37, 91, 202), delegate { NavigateFromPage("https://www.baidu.com/"); }));
             shortcuts.Controls.Add(CreateShortcutCard("☆", "书签", Color.FromArgb(117, 97, 193), ShowBookmarksDialog));
-            contentStack.Controls.Add(shortcuts, 0, 2);
+            layout.Controls.Add(shortcuts, 0, 3);
 
             _bookmarksContainer = new TableLayoutPanel
             {
@@ -1030,22 +1013,9 @@ namespace ChenmuBrowser
             _bookmarkArea.Controls.Add(_homeBookmarks);
             _bookmarkArea.Controls.Add(_bookmarkHeading);
             _bookmarksContainer.Controls.Add(_bookmarkArea, 1, 0);
-            layout.Controls.Add(_bookmarksContainer, 0, 1);
+            layout.Controls.Add(_bookmarksContainer, 0, 4);
 
             panel.Controls.Add(layout);
-            Action centerHomeContent = delegate
-            {
-                if (contentArea.ClientSize.Width <= 0 || contentArea.ClientSize.Height <= 0)
-                    return;
-
-                var left = (contentArea.ClientSize.Width - contentStack.Width) / 2;
-                var maxTop = Math.Max(0, contentArea.ClientSize.Height - contentStack.Height);
-                var bookmarkHeight = _bookmarksContainer == null ? 0 : _bookmarksContainer.Height;
-                var verticalBias = (bookmarkHeight + layout.Padding.Bottom - layout.Padding.Top) / 2;
-                var top = (contentArea.ClientSize.Height - contentStack.Height) / 2 + verticalBias;
-                top = Math.Min(maxTop, Math.Max(0, top));
-                contentStack.Location = new Point(Math.Max(0, left), Math.Max(0, top));
-            };
             Action updateHomeLayout = delegate
             {
                 if (panel.ClientSize.Width <= 0)
@@ -1056,7 +1026,6 @@ namespace ChenmuBrowser
                     ? new Padding(18, 6, 18, 6)
                     : new Padding(32, 20, 32, 16);
                 var availableWidth = Math.Max(1, layout.ClientSize.Width - layout.Padding.Horizontal);
-                contentStack.MaximumSize = new Size(availableWidth, 0);
                 searchFrame.Width = Math.Min(760, availableWidth);
                 searchFrame.Height = compact ? 60 : 64;
                 hero.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
@@ -1064,12 +1033,8 @@ namespace ChenmuBrowser
                 shortcuts.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
                 shortcuts.MaximumSize = new Size(availableWidth, 0);
                 shortcuts.WrapContents = availableWidth < 480;
-                contentStack.PerformLayout();
-                centerHomeContent();
                 AdjustBookmarkAreaHeight();
             };
-            contentArea.SizeChanged += delegate { centerHomeContent(); };
-            contentStack.SizeChanged += delegate { centerHomeContent(); };
             layout.SizeChanged += delegate { updateHomeLayout(); };
             panel.SizeChanged += delegate { updateHomeLayout(); };
             panel.HandleCreated += delegate
