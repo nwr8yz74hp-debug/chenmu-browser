@@ -39,6 +39,49 @@ jobs:
         shell: pwsh
         run: .\build-windows.ps1
 
+      - name: Smoke test silent upgrade from v1.0.13 in a spaced path
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $oldInstaller = Join-Path $env:TEMP 'CHENMU-Browser-v1.0.13-Setup.exe'
+          Invoke-WebRequest -Uri 'https://github.com/nwr8yz74hp-debug/chenmu-browser/releases/download/v1.0.13/CHENMU-Browser-Setup-x64.exe' -OutFile $oldInstaller
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\CHENMU Browser CI Space'
+          $registryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CHENMU Browser'
+          $installArgs = '/S /D=' + $installDir
+
+          function Invoke-SilentNsisInstaller([string]$InstallerPath, [string]$Arguments) {
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = $InstallerPath
+            $startInfo.Arguments = $Arguments
+            $startInfo.UseShellExecute = $false
+            $process = [System.Diagnostics.Process]::Start($startInfo)
+            if ($null -eq $process) { throw "Could not start installer: $InstallerPath" }
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode): $InstallerPath" }
+          }
+
+          Invoke-SilentNsisInstaller $oldInstaller $installArgs
+          $previous = Get-ItemProperty -LiteralPath $registryPath -Name @('DisplayVersion', 'InstallLocation')
+          if ($previous.DisplayVersion -ne '1.0.13') { throw "Expected v1.0.13, got $($previous.DisplayVersion)." }
+
+          $newInstaller = Join-Path $env:GITHUB_WORKSPACE 'dist\CHENMU-Browser-Setup-x64.exe'
+          Invoke-SilentNsisInstaller $newInstaller $installArgs
+          $expectedVersion = $env:GITHUB_REF_NAME.Substring(1)
+          $installed = Get-ItemProperty -LiteralPath $registryPath -Name @('DisplayVersion', 'InstallLocation')
+          if ($installed.DisplayVersion -ne $expectedVersion) { throw "Expected v$expectedVersion, got $($installed.DisplayVersion)." }
+          $trimChars = [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+          $actualInstallDir = [System.IO.Path]::GetFullPath($installed.InstallLocation).TrimEnd($trimChars)
+          $expectedInstallDir = [System.IO.Path]::GetFullPath($installDir).TrimEnd($trimChars)
+          if (-not [string]::Equals($actualInstallDir, $expectedInstallDir, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Installer used unexpected path: $actualInstallDir" }
+          $app = Join-Path $installDir 'CHENMU Browser.exe'
+          if (-not (Test-Path -LiteralPath $app)) { throw 'Installed browser executable is missing.' }
+          $actualFileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($app).FileVersion
+          if ($actualFileVersion -ne "$expectedVersion.0") { throw "Unexpected executable version: $actualFileVersion" }
+          $notice = Join-Path $env:LOCALAPPDATA 'CHENMU Browser\update-notice.txt'
+          if (-not (Test-Path -LiteralPath $notice) -or (Get-Content -LiteralPath $notice -Raw).Trim() -ne "v$expectedVersion") { throw 'Upgrade-complete notice marker was not created after a successful install.' }
+          if (-not (Test-Path -LiteralPath (Join-Path $installDir 'RELEASE_NOTES.md'))) { throw 'Installed release notes are missing.' }
+          Write-Host "Silent upgrade smoke test passed: v1.0.13 -> v$expectedVersion at $actualInstallDir (FileVersion $actualFileVersion)."
+
       - name: Set up Python for packaging
         uses: actions/setup-python@v5
         with:

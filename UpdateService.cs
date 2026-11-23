@@ -154,10 +154,12 @@ namespace ChenmuBrowser
             }
         }
 
-        public static void LaunchInstallerAfterExit(string installerPath, int processId, string installDirectory)
+        public static void LaunchInstallerAfterExit(string installerPath, int processId, string installDirectory, Version expectedVersion)
         {
             if (!File.Exists(installerPath))
                 throw new FileNotFoundException("找不到已下载的更新安装包。", installerPath);
+            if (expectedVersion == null)
+                throw new ArgumentNullException("expectedVersion");
 
             var scriptPath = Path.Combine(Path.GetTempPath(), "chenmu-browser-update-" + Guid.NewGuid().ToString("N") + ".ps1");
             var currentExe = Path.Combine(installDirectory, "CHENMU Browser.exe");
@@ -167,6 +169,9 @@ namespace ChenmuBrowser
                 "$installer = " + PowerShellLiteral(installerPath) + "\r\n" +
                 "$installDir = " + PowerShellLiteral(installDirectory) + "\r\n" +
                 "$app = " + PowerShellLiteral(currentExe) + "\r\n" +
+                "$expectedVersion = " + PowerShellLiteral(expectedVersion.ToString(3)) + "\r\n" +
+                "$expectedFileVersion = " + PowerShellLiteral(expectedVersion.ToString(3) + ".0") + "\r\n" +
+                "$registryKey = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\CHENMU Browser'\r\n" +
                 "$logDir = Join-Path $env:LOCALAPPDATA 'CHENMU Browser'\r\n" +
                 "$logPath = Join-Path $logDir 'update-install.log'\r\n" +
                 "$deadline = (Get-Date).AddMinutes(2)\r\n" +
@@ -178,11 +183,29 @@ namespace ChenmuBrowser
                 "    Start-Sleep -Milliseconds 500\r\n" +
                 "  }\r\n" +
                 "  Add-Content -LiteralPath $logPath -Value ('Starting silent installer: ' + (Get-Date -Format o))\r\n" +
-                "  $installArgs = '/S /D=' + $installDir\r\n" +
-                "  $result = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru\r\n" +
+                "  # NSIS requires /D to be last and unquoted; it accepts spaces through end-of-command-line.\r\n" +
+                "  $startInfo = New-Object System.Diagnostics.ProcessStartInfo\r\n" +
+                "  $startInfo.FileName = $installer\r\n" +
+                "  $startInfo.Arguments = '/S /D=' + $installDir\r\n" +
+                "  $startInfo.UseShellExecute = $false\r\n" +
+                "  $startInfo.CreateNoWindow = $true\r\n" +
+                "  $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden\r\n" +
+                "  $result = [System.Diagnostics.Process]::Start($startInfo)\r\n" +
+                "  if ($null -eq $result) { throw '无法启动更新安装程序。' }\r\n" +
+                "  $result.WaitForExit()\r\n" +
                 "  Add-Content -LiteralPath $logPath -Value ('Installer exit code: ' + $result.ExitCode)\r\n" +
                 "  if ($result.ExitCode -ne 0) { throw ('安装程序退出代码：' + $result.ExitCode) }\r\n" +
-                "  if (Test-Path -LiteralPath $app) { Start-Process -FilePath $app }\r\n" +
+                "  if (-not (Test-Path -LiteralPath $app)) { throw '安装后未找到浏览器程序。' }\r\n" +
+                "  $installed = Get-ItemProperty -LiteralPath $registryKey -Name DisplayVersion,InstallLocation\r\n" +
+                "  if ($installed.DisplayVersion -ne $expectedVersion) { throw ('安装版本不符：' + $installed.DisplayVersion) }\r\n" +
+                "  $trimChars = [char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)\r\n" +
+                "  $actualInstallDir = [System.IO.Path]::GetFullPath($installed.InstallLocation).TrimEnd($trimChars)\r\n" +
+                "  $expectedInstallDir = [System.IO.Path]::GetFullPath($installDir).TrimEnd($trimChars)\r\n" +
+                "  if (-not [string]::Equals($actualInstallDir, $expectedInstallDir, [System.StringComparison]::OrdinalIgnoreCase)) { throw '安装目录与原目录不一致。' }\r\n" +
+                "  $actualFileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($app).FileVersion\r\n" +
+                "  if ($actualFileVersion -ne $expectedFileVersion) { throw ('程序文件版本不符：' + $actualFileVersion) }\r\n" +
+                "  Add-Content -LiteralPath $logPath -Value ('Verified installed version ' + $actualFileVersion + ' at ' + $actualInstallDir)\r\n" +
+                "  Start-Process -FilePath $app\r\n" +
                 "} catch {\r\n" +
                 "  try { Add-Content -LiteralPath $logPath -Value ('Update failed: ' + $_.Exception.Message) } catch {}\r\n" +
                 "  Add-Type -AssemblyName System.Windows.Forms\r\n" +

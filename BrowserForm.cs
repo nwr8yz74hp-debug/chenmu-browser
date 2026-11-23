@@ -13,7 +13,7 @@ using Microsoft.Web.WebView2.WinForms;
 
 namespace ChenmuBrowser
 {
-    internal sealed class BrowserForm : Form
+    internal sealed partial class BrowserForm : Form
     {
         private const int EmSetCueBanner = 0x1501;
         private const int DwmwaUseImmersiveDarkMode = 20;
@@ -57,7 +57,6 @@ namespace ChenmuBrowser
         private readonly VScrollBar _tabScrollBar = new VScrollBar();
         private readonly TableLayoutPanel _rootLayout = new TableLayoutPanel();
         private readonly Panel _browserSurface = new Panel();
-        private readonly Timer _tabSidebarHoverTimer = new Timer();
         private readonly TextBox _addressBox = new TextBox();
         private readonly Panel _viewport = new Panel();
         private readonly Panel _statusPanel = new Panel();
@@ -75,7 +74,6 @@ namespace ChenmuBrowser
         private BrowserTab _activeTab;
         private bool _updatingTabSidebar;
         private bool _tabSidebarExpanded;
-        private int _tabSidebarLeaveTicks;
         private readonly bool _isIsolatedTest;
         private Task<CoreWebView2Environment> _webViewEnvironmentTask;
         private readonly List<DownloadEntry> _downloads = new List<DownloadEntry>();
@@ -114,6 +112,7 @@ namespace ChenmuBrowser
             HandleCreated += delegate { ApplyWindowCaptionColors(); };
             Activated += delegate { ApplyWindowCaptionColors(); };
             BuildInterface();
+            InitializeV11Features();
 #if DEBUG
             if (_isIsolatedTest)
                 InitializeVisualTestTabs(initialTestTabs);
@@ -123,6 +122,7 @@ namespace ChenmuBrowser
                 ApplyWindowCaptionColors();
                 UpdateTabSidebar();
                 EnsureTabVisible(_activeTab);
+                ShowPendingUpdateNotice();
 #if DEBUG
                 UpdateVisualTestStatus();
 #endif
@@ -131,8 +131,8 @@ namespace ChenmuBrowser
             };
             FormClosed += delegate
             {
-                _tabSidebarHoverTimer.Stop();
-                _tabSidebarHoverTimer.Dispose();
+                _homeGreetingTimer.Stop();
+                _homeGreetingTimer.Dispose();
             };
         }
 
@@ -388,6 +388,7 @@ namespace ChenmuBrowser
             var searchMenu = new ToolStripMenuItem("默认搜索引擎");
             searchMenu.DropDownItems.Add("Google", null, delegate { SetSearchEngine("google"); });
             searchMenu.DropDownItems.Add("Bing", null, delegate { SetSearchEngine("bing"); });
+            searchMenu.DropDownItems.Add("Soumu（DuckDuckGo）", null, delegate { SetSearchEngine("soumu"); });
             settingsMenu.Items.Add(searchMenu);
             settingsMenu.Items.Add(new ToolStripSeparator());
             var blockItem = new ToolStripMenuItem("拦截广告与跟踪器")
@@ -416,6 +417,15 @@ namespace ChenmuBrowser
                 _statusLabel.Text = _dataSaver ? "省流模式已开启；刷新页面后生效" : "省流模式已关闭";
             };
             settingsMenu.Items.Add(saverItem);
+            settingsMenu.Opening += delegate
+            {
+                blockItem.Checked = _blockTrackers;
+                saverItem.Checked = _dataSaver;
+            };
+            settingsMenu.Items.Add(new ToolStripSeparator());
+            settingsMenu.Items.Add("浏览历史…", null, delegate { ShowHistoryDialog(); });
+            settingsMenu.Items.Add("浏览器设置…", null, delegate { ShowBrowserSettingsDialog(); });
+            settingsMenu.Items.Add("进入 CHENMU Browser 官网", null, delegate { OpenOfficialWebsite(); });
             settingsMenu.Items.Add(new ToolStripSeparator());
             settingsMenu.Items.Add("下载管理…", null, delegate { ShowDownloadsDialog(); });
             settingsMenu.Items.Add("复制当前网址", null, delegate { CopyCurrentUrl(); });
@@ -460,8 +470,13 @@ namespace ChenmuBrowser
             _browserSurface.Controls.Add(_viewport);
             _browserSurface.Controls.Add(_statusPanel);
             _browserSurface.Controls.Add(_header);
-            _rootLayout.Controls.Add(_browserSurface, 1, 0);
+            _browserSurface.Controls.Add(_tabSidebarHost);
+            _browserSurface.SizeChanged += delegate { LayoutTabSidebarOverlay(); };
+            _header.SizeChanged += delegate { LayoutTabSidebarOverlay(); };
+            _statusPanel.SizeChanged += delegate { LayoutTabSidebarOverlay(); };
+            _rootLayout.Controls.Add(_browserSurface, 0, 0);
             Controls.Add(_rootLayout);
+            LayoutTabSidebarOverlay();
             CreateNewTab();
         }
 
@@ -474,14 +489,16 @@ namespace ChenmuBrowser
             _rootLayout.Dock = DockStyle.Fill;
             _rootLayout.Margin = Padding.Empty;
             _rootLayout.Padding = Padding.Empty;
-            _rootLayout.ColumnCount = 2;
+            _rootLayout.ColumnCount = 1;
             _rootLayout.RowCount = 1;
             _rootLayout.BackColor = Color.White;
-            _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, collapsedWidth));
             _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
-            _tabSidebarHost.Dock = DockStyle.Fill;
+            _tabSidebarHost.Dock = DockStyle.None;
+            _tabSidebarHost.Location = Point.Empty;
+            _tabSidebarHost.Size = new Size(collapsedWidth, 100);
+            _tabSidebarHost.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
             _tabSidebarHost.BackColor = Color.FromArgb(249, 251, 255);
             _tabSidebarContent.Dock = DockStyle.Fill;
             _tabSidebarContent.Visible = false;
@@ -497,7 +514,7 @@ namespace ChenmuBrowser
             _tabSidebarEdge.Width = collapsedWidth;
             _tabSidebarEdge.BackColor = Color.FromArgb(239, 245, 252);
             _tabSidebarEdge.Cursor = Cursors.Hand;
-            _tabSidebarEdge.AccessibleName = "悬停展开标签栏";
+            _tabSidebarEdge.AccessibleName = "点击展开或收起标签栏";
             _tabSidebarEdge.Paint += delegate(object sender, PaintEventArgs e)
             {
                 var markerHeight = Math.Max(24, (int)Math.Round(30F * scale));
@@ -511,8 +528,7 @@ namespace ChenmuBrowser
             };
             _tabSidebarHost.Controls.Add(_tabSidebarContent);
             _tabSidebarHost.Controls.Add(_tabSidebarEdge);
-            _tabSidebarHost.MouseEnter += delegate { SetTabSidebarExpanded(true); };
-            _tabSidebarEdge.MouseEnter += delegate { SetTabSidebarExpanded(true); };
+            _tabSidebarEdge.Click += delegate { SetTabSidebarExpanded(!_tabSidebarExpanded); };
 
             var sidebarLayout = new TableLayoutPanel
             {
@@ -577,42 +593,24 @@ namespace ChenmuBrowser
             sidebarLayout.Controls.Add(newTabButton, 0, 1);
             sidebarLayout.SetColumnSpan(newTabButton, 2);
             _tabSidebarContent.Controls.Add(sidebarLayout);
-            _rootLayout.Controls.Add(_tabSidebarHost, 0, 0);
-
-            _tabSidebarHoverTimer.Interval = 160;
-            _tabSidebarHoverTimer.Tick += delegate
-            {
-                if (!_tabSidebarExpanded || !_tabSidebarHost.IsHandleCreated)
-                    return;
-                var bounds = _tabSidebarHost.RectangleToScreen(_tabSidebarHost.ClientRectangle);
-                if (bounds.Contains(Cursor.Position))
-                    _tabSidebarLeaveTicks = 0;
-                else if (++_tabSidebarLeaveTicks >= 2)
-                    SetTabSidebarExpanded(false);
-            };
         }
 
         private void SetTabSidebarExpanded(bool expanded)
         {
-            if (_tabSidebarExpanded == expanded || _rootLayout.ColumnStyles.Count == 0)
+            if (_tabSidebarExpanded == expanded)
                 return;
             _tabSidebarExpanded = expanded;
-            _tabSidebarLeaveTicks = 0;
             var scale = Math.Max(1F, DeviceDpi / 96F);
-            var width = (int)Math.Round((expanded ? 236F : 10F) * scale);
-            _rootLayout.SuspendLayout();
+            var width = (int)Math.Round((expanded ? 118F : 10F) * scale);
             _tabSidebarContent.Visible = expanded;
+            _tabSidebarHost.Width = width;
             _tabSidebarEdge.Width = Math.Max(8, (int)Math.Round(10F * scale));
-            _rootLayout.ColumnStyles[0].Width = width;
-            _rootLayout.ResumeLayout(true);
+            _tabSidebarHost.BringToFront();
             if (expanded)
             {
-                _tabSidebarHoverTimer.Start();
                 UpdateTabSidebar();
                 EnsureTabVisible(_activeTab);
             }
-            else
-                _tabSidebarHoverTimer.Stop();
 #if DEBUG
             UpdateVisualTestStatus();
 #endif
@@ -1014,7 +1012,8 @@ namespace ChenmuBrowser
                 }
 
                 _statusLabel.Text = "更新包校验通过，正在安装并重启…";
-                UpdateService.LaunchInstallerAfterExit(installerPath, Process.GetCurrentProcess().Id, Application.StartupPath);
+                UpdateService.LaunchInstallerAfterExit(installerPath, Process.GetCurrentProcess().Id,
+                    Application.StartupPath, latest.Version);
                 Close();
             }
             catch (Exception ex)
@@ -1152,6 +1151,28 @@ namespace ChenmuBrowser
             brandRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76F));
             brandRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             brandRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var brandInfo = new TableLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                RowCount = 3,
+                BackColor = Color.Transparent,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            brandInfo.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            brandInfo.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            brandInfo.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            brandInfo.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _homeBrandLabel = new Label
+            {
+                Text = "CHENMU Browser",
+                AutoSize = true,
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold, GraphicsUnit.Point),
+                ForeColor = Color.FromArgb(91, 111, 133),
+                Margin = new Padding(1, 0, 0, 1)
+            };
             var brandLogo = new PictureBox
             {
                 Image = LoadBrandMark(),
@@ -1172,8 +1193,19 @@ namespace ChenmuBrowser
                 Anchor = AnchorStyles.Left,
                 Margin = Padding.Empty
             };
+            _homeGreetingLabel = title;
+            _homeClockLabel = new Label
+            {
+                AutoSize = true,
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point),
+                ForeColor = Color.FromArgb(101, 119, 139),
+                Margin = new Padding(1, 2, 0, 0)
+            };
+            brandInfo.Controls.Add(_homeBrandLabel, 0, 0);
+            brandInfo.Controls.Add(title, 0, 1);
+            brandInfo.Controls.Add(_homeClockLabel, 0, 2);
             brandRow.Controls.Add(brandLogo, 0, 0);
-            brandRow.Controls.Add(title, 1, 0);
+            brandRow.Controls.Add(brandInfo, 1, 0);
             hero.Controls.Add(brandRow, 0, 0);
             layout.Controls.Add(hero, 0, 1);
 
@@ -1262,7 +1294,7 @@ namespace ChenmuBrowser
 
             _homeSearchEngineButton = new Button
             {
-                Text = (_searchEngine == "google" ? "Google" : "Bing") + " ▾",
+                Text = GetSearchEngineDisplayName(_searchEngine) + " ▾",
                 Dock = DockStyle.Fill,
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.White,
@@ -1276,11 +1308,12 @@ namespace ChenmuBrowser
             var searchEngineMenu = new ContextMenuStrip();
             searchEngineMenu.Items.Add("Google", null, delegate { SetSearchEngine("google"); });
             searchEngineMenu.Items.Add("Bing", null, delegate { SetSearchEngine("bing"); });
+            searchEngineMenu.Items.Add("Soumu（DuckDuckGo）", null, delegate { SetSearchEngine("soumu"); });
             _homeSearchEngineButton.Click += delegate
             {
                 searchEngineMenu.Show(_homeSearchEngineButton, new Point(0, _homeSearchEngineButton.Height));
             };
-            _toolTip.SetToolTip(_homeSearchEngineButton, "选择搜索引擎");
+            _toolTip.SetToolTip(_homeSearchEngineButton, "选择搜索引擎；Soumu 使用 DuckDuckGo 第三方结果");
 
             searchLayout.Controls.Add(searchButton, 0, 0);
             searchLayout.Controls.Add(homeSearchBoxHost, 1, 0);
@@ -1328,7 +1361,8 @@ namespace ChenmuBrowser
                 layout.RowStyles[2].Height = searchFrame.Height + (int)Math.Round(10 * scale);
                 layout.RowStyles[3].SizeType = SizeType.Absolute;
                 layout.RowStyles[3].Height = (int)Math.Round((compact ? 84 : 92) * scale);
-                title.Font = new Font("Microsoft YaHei UI", compact ? 22F : 25F, FontStyle.Bold, GraphicsUnit.Point);
+                title.Font = new Font("Microsoft YaHei UI", compact ? 21F : 25F, FontStyle.Bold, GraphicsUnit.Point);
+                brandInfo.PerformLayout();
                 brandRow.PerformLayout();
                 homeSearchBoxHost.PerformLayout();
                 layout.PerformLayout();
@@ -1414,11 +1448,12 @@ namespace ChenmuBrowser
 
         private void SetSearchEngine(string engine)
         {
-            _searchEngine = String.Equals(engine, "bing", StringComparison.OrdinalIgnoreCase) ? "bing" : "google";
+            _searchEngine = String.Equals(engine, "bing", StringComparison.OrdinalIgnoreCase) ? "bing" :
+                String.Equals(engine, "soumu", StringComparison.OrdinalIgnoreCase) ? "soumu" : "google";
             if (_homeSearchEngineButton != null)
-                _homeSearchEngineButton.Text = (_searchEngine == "google" ? "Google" : "Bing") + " ▾";
+                _homeSearchEngineButton.Text = GetSearchEngineDisplayName(_searchEngine) + " ▾";
             SavePreferences();
-            _statusLabel.Text = "默认搜索引擎：" + (_searchEngine == "google" ? "Google" : "Bing");
+            _statusLabel.Text = "默认搜索引擎：" + GetSearchEngineDisplayName(_searchEngine);
         }
 
         private async void SearchFromHome()
@@ -1430,12 +1465,12 @@ namespace ChenmuBrowser
         {
             var hour = DateTime.Now.Hour;
             if (hour >= 5 && hour < 12)
-                return "早上好，今天想去哪儿？";
+                return "早上好，愿你从容开启新一天";
             if (hour >= 12 && hour < 18)
-                return "下午好，今天想去哪儿？";
+                return "下午好，愿你此刻心情明朗";
             if (hour >= 18 && hour < 23)
-                return "晚上好，今天想去哪儿？";
-            return "夜深了，今天想去哪儿？";
+                return "晚上好，愿你带着收获轻松归来";
+            return "夜深了，愿你安然，也有好梦";
         }
 
         private static string GetBookmarkHost(string url)
@@ -1473,7 +1508,9 @@ namespace ChenmuBrowser
 
             var searchUrl = _searchEngine == "bing"
                 ? "https://www.bing.com/search?q="
-                : "https://www.google.com/search?q=";
+                : _searchEngine == "soumu"
+                    ? SoumuSearchUrlPrefix
+                    : "https://www.google.com/search?q=";
             return searchUrl + Uri.EscapeDataString(value);
         }
 
@@ -1594,6 +1631,7 @@ namespace ChenmuBrowser
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.AreDefaultContextMenusEnabled = true;
             core.Profile.PreferredTrackingPreventionLevel = CoreWebView2TrackingPreventionLevel.Balanced;
+            RegisterPageAnimationScript(core);
             core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             core.WebResourceRequested += Core_WebResourceRequested;
             core.DownloadStarting += Core_DownloadStarting;
@@ -1607,6 +1645,8 @@ namespace ChenmuBrowser
             {
                 if (IsActiveCore(core))
                     _statusLabel.Text = e.IsSuccess ? "完成" : "页面加载失败；可检查网址或网络连接。";
+                if (e.IsSuccess)
+                    RecordHistory(core);
                 UpdateWindowTitle(core);
             };
             core.DocumentTitleChanged += delegate { UpdateWindowTitle(core); };
@@ -2211,7 +2251,12 @@ namespace ChenmuBrowser
                     await core.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllProfile);
                     core.CookieManager.DeleteAllCookies();
                 }
-                _statusLabel.Text = "浏览数据已清除。";
+                if (!ClearHistoryEntries())
+                {
+                    _statusLabel.Text = "浏览数据已清除，但历史记录未能清除。";
+                    return;
+                }
+                _statusLabel.Text = "浏览数据与历史记录已清除。";
             }
             catch (Exception ex)
             {
@@ -2378,8 +2423,16 @@ namespace ChenmuBrowser
                         continue;
                     if (parts[0] == "searchEngine")
                     {
-                        if (parts[1] == "google" || parts[1] == "bing")
+                        if (parts[1] == "google" || parts[1] == "bing" || parts[1] == "soumu")
                             _searchEngine = parts[1];
+                        continue;
+                    }
+                    if (parts[0] == "historyRetentionDays")
+                    {
+                        int days;
+                        if (Int32.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out days) &&
+                            (days == 0 || days == 7 || days == 30 || days == 90 || days == 365))
+                            _historyRetentionDays = days;
                         continue;
                     }
                     if (parts[0] == "lastUpdateCheckUtc")
@@ -2396,6 +2449,8 @@ namespace ChenmuBrowser
                         _blockTrackers = value;
                     else if (parts[0] == "dataSaver")
                         _dataSaver = value;
+                    else if (parts[0] == "pageAnimations")
+                        _pageAnimationsEnabled = value;
                 }
             }
             catch { }
@@ -2413,7 +2468,9 @@ namespace ChenmuBrowser
                 {
                     "blockTrackers=" + _blockTrackers,
                     "dataSaver=" + _dataSaver,
+                    "pageAnimations=" + _pageAnimationsEnabled,
                     "searchEngine=" + _searchEngine,
+                    "historyRetentionDays=" + _historyRetentionDays.ToString(CultureInfo.InvariantCulture),
                     "lastUpdateCheckUtc=" + lastUpdateCheck
                 });
             }

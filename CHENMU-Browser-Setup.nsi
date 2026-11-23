@@ -9,6 +9,7 @@ RequestExecutionLevel user
 !endif
 !define PRODUCT_NAME "CHENMU Browser"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\CHENMU Browser"
+Var PreviousVersion
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "dist/CHENMU-Browser-Setup-x64.exe"
@@ -17,6 +18,21 @@ InstallDirRegKey HKCU "Software\CHENMU Browser" "InstallDir"
 SetCompressor /SOLID lzma
 ShowInstDetails nevershow
 ShowUninstDetails nevershow
+
+Function .onInit
+  ReadRegStr $PreviousVersion HKCU "${UNINSTALL_KEY}" "DisplayVersion"
+FunctionEnd
+
+Function .onInstSuccess
+  StrCmp $PreviousVersion "" no_update_notice
+  StrCmp $PreviousVersion "${PRODUCT_VERSION}" no_update_notice
+  CreateDirectory "$LOCALAPPDATA\CHENMU Browser"
+  FileOpen $0 "$LOCALAPPDATA\CHENMU Browser\update-notice.txt" "w"
+  IfErrors no_update_notice
+  FileWrite $0 "v${PRODUCT_VERSION}$\r$\n"
+  FileClose $0
+no_update_notice:
+FunctionEnd
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_COMPONENTS
@@ -36,6 +52,7 @@ Section "CHENMU Browser（必需）" SEC_MAIN
   File "dist\Microsoft.Web.WebView2.WinForms.dll"
   File "dist\Microsoft.Web.WebView2.Wpf.dll"
   File "dist\WebView2Loader.dll"
+  File "RELEASE_NOTES.md"
   SetOutPath "$INSTDIR\Assets"
   File "dist\Assets\chenmu-logo.png"
   File "dist\Assets\domain-blocklist.txt"
@@ -75,12 +92,14 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\CHENMU Browser"
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
   DeleteRegKey HKCU "Software\CHENMU Browser"
+  Delete "$LOCALAPPDATA\CHENMU Browser\update-notice.txt"
   Delete "$INSTDIR\CHENMU Browser.exe"
   Delete "$INSTDIR\CHENMU Browser.exe.config"
   Delete "$INSTDIR\Microsoft.Web.WebView2.Core.dll"
   Delete "$INSTDIR\Microsoft.Web.WebView2.WinForms.dll"
   Delete "$INSTDIR\Microsoft.Web.WebView2.Wpf.dll"
   Delete "$INSTDIR\WebView2Loader.dll"
+  Delete "$INSTDIR\RELEASE_NOTES.md"
   Delete "$INSTDIR\Assets\chenmu-logo.png"
   Delete "$INSTDIR\Assets\domain-blocklist.txt"
   RMDir "$INSTDIR\Assets"

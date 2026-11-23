@@ -1,8 +1,8 @@
 # CHENMU Browser for Windows
 
-CHENMU Browser 是一款轻量 Windows x64 浏览器，使用 Microsoft Edge WebView2 内核，默认 Google 搜索，也可切换到 Bing。
+CHENMU Browser 是一款轻量 Windows x64 浏览器，使用 Microsoft Edge WebView2 内核。主页提供 Google、Bing 和 Soumu 搜索选择；Soumu 是直达 DuckDuckGo 第三方结果的简洁入口，并非 CHENMU 自建网页索引，第三方结果页可能包含广告。
 
-安装包与各版本说明请见 [GitHub Releases](https://github.com/nwr8yz74hp-debug/chenmu-browser/releases/latest)。
+安装包与各版本说明请见 [GitHub Releases](https://github.com/nwr8yz74hp-debug/chenmu-browser/releases/latest)。浏览器官网：[CHENMU Browser](https://chenmu-browser-site.cosmic-cast.workers.dev/)。
 
 ## 安装与卸载
 
@@ -10,11 +10,11 @@ CHENMU Browser 是一款轻量 Windows x64 浏览器，使用 Microsoft Edge Web
 
 运行环境需要 Windows x64、.NET Framework 4.8 和 Microsoft Edge WebView2 Evergreen Runtime。大多数较新的 Windows 设备已具备这些组件；如果网页内核缺失，浏览器会提供运行时安装入口。
 
-## 自动更新
+## 应用内更新
 
-浏览器启动后会在后台检查公开 GitHub Releases，每 24 小时最多自动检查一次；也可以在右上角“设置与隐私”菜单中手动选择“检查更新”。发现新版本时，浏览器会先询问；确认后会自动下载 Windows x64 安装器、验证 SHA-256、关闭浏览器并静默升级，随后自动重启，不需要手动重新下载或安装。若网络不可用、发布包缺少校验摘要或校验失败，更新会停止，当前版本不会运行未验证的安装包。
+浏览器启动后会在后台检查公开 GitHub Releases，每 24 小时最多自动检查一次；也可以在右上角“设置与隐私”菜单中手动选择“检查更新”。发现新版本时，浏览器会先询问；确认后会自动下载 Windows x64 安装器、验证 SHA-256、关闭浏览器并静默升级，随后自动重启。更新完成后会弹窗显示该版本更新内容。
 
-自动安装更新仅适用于已安装版本；便携版发现新版本时不会覆盖所在文件夹，请先使用安装器安装后再使用应用内更新。
+自动安装更新仅适用于已安装版本；便携版发现新版本时不会覆盖所在文件夹，请先使用安装器安装后再使用应用内更新。若网络不可用、发布包缺少校验摘要或校验失败，更新会停止，当前版本不会运行未验证的安装包。
 
 更新检查会连接项目的公开 GitHub Releases。它不上传浏览记录、书签或设备标识；GitHub 仍会像接收普通 HTTPS 请求一样看到请求的网络来源。更新发布依赖 GitHub 账号和 Release 权限，更新地址固定在本仓库的最新正式 Release。
 
@@ -28,10 +28,11 @@ CHENMU Browser 是一款轻量 Windows x64 浏览器，使用 Microsoft Edge Web
 - `Esc`：停止加载；在地址栏可恢复当前网址，在起始页搜索框可清空内容。
 - `Ctrl+Shift+Delete`：打开清理浏览数据确认框。
 - 地址栏和起始页搜索框右侧的 `×` 可一键清空；设置菜单可复制当前网址。
-- 起始页提供 Google、Bing、百度和书签入口；书签可从主页卡片直接打开。
+- 点击窗口左侧细边即可展开或收起标签栏；展开时为浮层，不会缩小网页可视区域。
+- 设置菜单可打开浏览历史、浏览器设置、下载管理和官网；历史记录保存在本机，可设置保留天数。
 - 工具栏的下载按钮和设置菜单都可打开下载管理；列表支持查看进度、取消、打开文件或定位文件夹。下载默认保存到系统“下载”目录，重名文件会自动加序号避免覆盖。
 
-密码保存和表单自动填充默认关闭。广告/跟踪域名拦截和省流模式可从设置菜单切换；省流模式会阻止图片请求。
+密码保存和表单自动填充默认关闭。广告/跟踪域名拦截、省流模式及轻量页面淡入动画可在浏览器设置中调整。历史记录文件保存在本机应用数据目录，CHENMU Browser 不会单独上传该文件；输入的当前查询仍会发送给所选搜索服务。“清除浏览数据”也会清除本机历史。
 
 ## 从源码构建
 
