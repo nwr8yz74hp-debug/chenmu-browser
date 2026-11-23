@@ -40,11 +40,6 @@ namespace ChenmuBrowser
 
         private Panel _homeView;
         private Panel _errorView;
-        private FlowLayoutPanel _homeBookmarks;
-        private TableLayoutPanel _bookmarksContainer;
-        private RoundedPanel _bookmarkArea;
-        private Label _bookmarkHeading;
-        private int _lastBookmarkWidth = -1;
         private TextBox _homeSearchBox;
         private Button _homeSearchEngineButton;
         private WebView2 _webView;
@@ -144,10 +139,10 @@ namespace ChenmuBrowser
         {
             _header.Dock = DockStyle.Top;
             _header.Height = 60;
-            _header.BackColor = Color.FromArgb(248, 250, 253);
+            _header.BackColor = Color.FromArgb(249, 251, 255);
             _header.Paint += delegate(object sender, PaintEventArgs e)
             {
-                using (var pen = new Pen(Color.FromArgb(226, 232, 239)))
+                using (var pen = new Pen(Color.FromArgb(226, 233, 241)))
                     e.Graphics.DrawLine(pen, 0, _header.Height - 1, _header.Width, _header.Height - 1);
             };
 
@@ -326,16 +321,16 @@ namespace ChenmuBrowser
             _tabStrip.Controls.Add(newTabButton);
 
             _viewport.Dock = DockStyle.Fill;
-            _viewport.BackColor = Color.FromArgb(245, 248, 252);
+            _viewport.BackColor = Color.FromArgb(244, 248, 253);
             _homeView = BuildHomeView();
             _viewport.Controls.Add(_homeView);
 
             _statusPanel.Dock = DockStyle.Bottom;
             _statusPanel.Height = 26;
-            _statusPanel.BackColor = Color.FromArgb(248, 250, 253);
+            _statusPanel.BackColor = Color.FromArgb(249, 251, 255);
             _statusPanel.Paint += delegate(object sender, PaintEventArgs e)
             {
-                using (var pen = new Pen(Color.FromArgb(226, 232, 239)))
+                using (var pen = new Pen(Color.FromArgb(226, 233, 241)))
                     e.Graphics.DrawLine(pen, 0, 0, _statusPanel.Width, 0);
             };
             _statusLabel.Dock = DockStyle.Fill;
@@ -485,7 +480,6 @@ namespace ChenmuBrowser
                 UpdateWindowTitle(tab.WebView.CoreWebView2);
             }
             UpdateTabHeaders();
-            RefreshHomeBookmarks();
         }
 
         private void UpdateTabHeaders()
@@ -758,32 +752,36 @@ namespace ChenmuBrowser
 
         private Panel BuildHomeView()
         {
-            var panel = new GradientPanel { Dock = DockStyle.Fill };
+            var panel = new GradientPanel
+            {
+                Dock = DockStyle.Fill,
+                StartColor = Color.FromArgb(249, 251, 255),
+                EndColor = Color.FromArgb(239, 245, 252)
+            };
             var layout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 6,
-                Padding = new Padding(32, 20, 32, 16),
+                RowCount = 5,
+                Padding = new Padding(28, 12, 28, 10),
                 BackColor = Color.Transparent
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 78F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 104F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 110F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 86F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 76F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 90F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
 
             var hero = new TableLayoutPanel
             {
-                Dock = DockStyle.Fill,
-                AutoSize = false,
-                Height = 76,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Anchor = AnchorStyles.None,
                 ColumnCount = 1,
                 RowCount = 2,
                 BackColor = Color.Transparent,
-                Margin = new Padding(0, 0, 0, 14)
+                Margin = new Padding(0)
             };
             hero.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             hero.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -803,7 +801,7 @@ namespace ChenmuBrowser
             {
                 Image = LoadBrandMark(),
                 SizeMode = PictureBoxSizeMode.Zoom,
-                Size = new Size(46, 46),
+                Size = new Size(44, 44),
                 BackColor = Color.Transparent,
                 Margin = new Padding(0, 0, 10, 0)
             };
@@ -811,11 +809,11 @@ namespace ChenmuBrowser
                 brandLogo.Visible = false;
             var title = new Label
             {
-                Text = "CHENMU Browser",
+                Text = "欢迎使用 CHENMU Browser",
                 AutoSize = true,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Font = new Font("Microsoft YaHei UI", 27F, FontStyle.Bold, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(35, 55, 75),
+                Font = new Font("Microsoft YaHei UI", 25F, FontStyle.Bold, GraphicsUnit.Point),
+                ForeColor = Color.FromArgb(38, 58, 80),
                 Margin = new Padding(0, 1, 0, 0)
             };
             brandRow.Controls.Add(brandLogo);
@@ -826,9 +824,9 @@ namespace ChenmuBrowser
                 AutoSize = true,
                 Anchor = AnchorStyles.None,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Regular, GraphicsUnit.Point),
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Regular, GraphicsUnit.Point),
                 ForeColor = Color.FromArgb(112, 126, 143),
-                Margin = new Padding(0, 3, 0, 0)
+                Margin = new Padding(0, 4, 0, 0)
             };
             hero.Controls.Add(brandRow, 0, 0);
             hero.Controls.Add(hint, 0, 1);
@@ -837,10 +835,10 @@ namespace ChenmuBrowser
             var searchFrame = new RoundedPanel
             {
                 Width = 760,
-                Height = 64,
+                Height = 62,
                 Anchor = AnchorStyles.None,
-                Margin = new Padding(0, 0, 0, 14),
-                Padding = new Padding(10),
+                Margin = new Padding(0),
+                Padding = new Padding(8),
                 SurfaceColor = Color.White,
                 BorderColor = Color.FromArgb(218, 228, 239),
                 CornerRadius = 19
@@ -851,34 +849,31 @@ namespace ChenmuBrowser
                 ColumnCount = 4,
                 RowCount = 1,
                 BackColor = Color.White,
-                Padding = new Padding(3, 1, 3, 1)
+                Padding = new Padding(2, 1, 2, 1)
             };
-            searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 116F));
+            searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52F));
             searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30F));
-            searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86F));
+            searchLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96F));
             searchLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            _homeSearchEngineButton = new Button
+            var searchButton = new RoundedButton
             {
-                Text = (_searchEngine == "google" ? "Google" : "Bing") + " ▾",
+                Text = "⌕",
                 Dock = DockStyle.Fill,
-                FlatStyle = FlatStyle.Flat,
+                Margin = new Padding(1),
+                CornerRadius = 15,
                 BackColor = Color.White,
-                ForeColor = Color.FromArgb(52, 103, 170),
-                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold, GraphicsUnit.Point),
-                Margin = new Padding(2),
-                Cursor = Cursors.Hand
+                ForeColor = Color.FromArgb(61, 111, 170),
+                Font = new Font("Segoe UI Symbol", 19F, FontStyle.Regular, GraphicsUnit.Point),
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
+                TabStop = false,
+                AccessibleName = "搜索"
             };
-            _homeSearchEngineButton.FlatAppearance.BorderSize = 0;
-            _homeSearchEngineButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(245, 248, 252);
-            var searchEngineMenu = new ContextMenuStrip();
-            searchEngineMenu.Items.Add("Google", null, delegate { SetSearchEngine("google"); });
-            searchEngineMenu.Items.Add("Bing", null, delegate { SetSearchEngine("bing"); });
-            _homeSearchEngineButton.Click += delegate
-            {
-                searchEngineMenu.Show(_homeSearchEngineButton, new Point(0, _homeSearchEngineButton.Height));
-            };
-            _toolTip.SetToolTip(_homeSearchEngineButton, "选择搜索引擎");
+            searchButton.FlatAppearance.BorderSize = 0;
+            searchButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(239, 245, 252);
+            searchButton.Click += delegate { SearchFromHome(); };
+            _toolTip.SetToolTip(searchButton, "搜索（Enter）");
 
             _homeSearchBox = new TextBox
             {
@@ -918,27 +913,33 @@ namespace ChenmuBrowser
             _homeSearchBox.Enter += delegate { searchFrame.BorderColor = Color.FromArgb(76, 139, 214); };
             _homeSearchBox.Leave += delegate { searchFrame.BorderColor = Color.FromArgb(218, 228, 239); };
             _toolTip.SetToolTip(homeSearchClearButton, "清空搜索内容");
-            var searchButton = new RoundedButton
+
+            _homeSearchEngineButton = new Button
             {
-                Text = "搜索",
+                Text = (_searchEngine == "google" ? "Google" : "Bing") + " ▾",
                 Dock = DockStyle.Fill,
-                Margin = new Padding(2),
-                CornerRadius = 15,
-                BackColor = Color.FromArgb(49, 112, 189),
-                ForeColor = Color.White,
-                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
                 FlatStyle = FlatStyle.Flat,
-                Cursor = Cursors.Hand,
-                TabStop = false,
-                AccessibleName = "搜索"
+                BackColor = Color.White,
+                ForeColor = Color.FromArgb(52, 103, 170),
+                Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
+                Margin = new Padding(2),
+                Cursor = Cursors.Hand
             };
-            searchButton.FlatAppearance.BorderSize = 0;
-            searchButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(39, 97, 168);
-            searchButton.Click += async delegate { await NavigateAsync(_homeSearchBox.Text); };
-            searchLayout.Controls.Add(_homeSearchEngineButton, 0, 0);
+            _homeSearchEngineButton.FlatAppearance.BorderSize = 0;
+            _homeSearchEngineButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(245, 248, 252);
+            var searchEngineMenu = new ContextMenuStrip();
+            searchEngineMenu.Items.Add("Google", null, delegate { SetSearchEngine("google"); });
+            searchEngineMenu.Items.Add("Bing", null, delegate { SetSearchEngine("bing"); });
+            _homeSearchEngineButton.Click += delegate
+            {
+                searchEngineMenu.Show(_homeSearchEngineButton, new Point(0, _homeSearchEngineButton.Height));
+            };
+            _toolTip.SetToolTip(_homeSearchEngineButton, "选择搜索引擎");
+
+            searchLayout.Controls.Add(searchButton, 0, 0);
             searchLayout.Controls.Add(_homeSearchBox, 1, 0);
             searchLayout.Controls.Add(homeSearchClearButton, 2, 0);
-            searchLayout.Controls.Add(searchButton, 3, 0);
+            searchLayout.Controls.Add(_homeSearchEngineButton, 3, 0);
             searchFrame.Controls.Add(searchLayout);
             layout.Controls.Add(searchFrame, 0, 2);
 
@@ -950,97 +951,34 @@ namespace ChenmuBrowser
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
                 BackColor = Color.Transparent,
-                Margin = new Padding(0, 0, 0, 14)
-            };
-            shortcuts.Controls.Add(CreateShortcutCard("G", "Google", Color.FromArgb(66, 133, 244), delegate { NavigateFromPage("https://www.google.com/"); }));
-            shortcuts.Controls.Add(CreateShortcutCard("b", "Bing", Color.FromArgb(0, 120, 212), delegate { NavigateFromPage("https://www.bing.com/"); }));
-            shortcuts.Controls.Add(CreateShortcutCard("百", "百度", Color.FromArgb(37, 91, 202), delegate { NavigateFromPage("https://www.baidu.com/"); }));
-            shortcuts.Controls.Add(CreateShortcutCard("☆", "书签", Color.FromArgb(117, 97, 193), ShowBookmarksDialog));
-            layout.Controls.Add(shortcuts, 0, 3);
-
-            _bookmarksContainer = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                Height = 110,
-                ColumnCount = 3,
-                RowCount = 1,
-                BackColor = Color.Transparent,
                 Margin = new Padding(0)
             };
-            _bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12F));
-            _bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 76F));
-            _bookmarksContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12F));
-            _bookmarksContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            _bookmarkArea = new RoundedPanel
-            {
-                Dock = DockStyle.Fill,
-                SurfaceColor = Color.White,
-                BorderColor = Color.FromArgb(228, 234, 241),
-                CornerRadius = 17,
-                Padding = new Padding(16, 8, 16, 8),
-                Margin = new Padding(0, 2, 0, 2)
-            };
-            _bookmarkHeading = new Label
-            {
-                Text = "常用收藏",
-                Dock = DockStyle.Top,
-                Height = 26,
-                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(60, 76, 95),
-                BackColor = Color.White,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            _homeBookmarks = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                AutoScroll = true,
-                WrapContents = false,
-                FlowDirection = FlowDirection.LeftToRight,
-                Padding = new Padding(0, 4, 0, 0),
-                BackColor = Color.White
-            };
-            _homeBookmarks.SizeChanged += delegate
-            {
-                var width = _homeBookmarks.ClientSize.Width;
-                if (width != _lastBookmarkWidth)
-                {
-                    _lastBookmarkWidth = width;
-                    AdjustBookmarkAreaHeight();
-                }
-            };
-            _bookmarkArea.Controls.Add(_homeBookmarks);
-            _bookmarkArea.Controls.Add(_bookmarkHeading);
-            _bookmarksContainer.Controls.Add(_bookmarkArea, 1, 0);
-            layout.Controls.Add(_bookmarksContainer, 0, 4);
+            shortcuts.Controls.Add(CreateShortcutCard("＋", "添加快捷方式", Color.FromArgb(77, 133, 193), ShowAddShortcutDialog));
+            shortcuts.Controls.Add(CreateShortcutCard("☆", "收藏夹", Color.FromArgb(117, 105, 181), ShowBookmarksDialog));
+            shortcuts.Controls.Add(CreateShortcutCard("↓", "下载", Color.FromArgb(74, 145, 137), ShowDownloadsDialog));
+            layout.Controls.Add(shortcuts, 0, 3);
 
             panel.Controls.Add(layout);
             Action updateHomeLayout = delegate
             {
-                if (panel.ClientSize.Width <= 0)
+                if (panel.ClientSize.Width <= 0 || layout.IsDisposed)
                     return;
 
                 var compact = panel.ClientSize.Width < 980 || panel.ClientSize.Height < 520;
-                layout.Padding = compact
-                    ? new Padding(18, 6, 18, 6)
-                    : new Padding(32, 20, 32, 16);
-                var availableWidth = Math.Max(1, layout.ClientSize.Width - layout.Padding.Horizontal);
                 var scale = panel.DeviceDpi / 96F;
+                layout.Padding = compact
+                    ? new Padding(20, 8, 20, 8)
+                    : new Padding(32, 18, 32, 14);
+                var availableWidth = Math.Max(1, layout.ClientSize.Width - layout.Padding.Horizontal);
                 searchFrame.Width = Math.Min((int)Math.Round(760 * scale), availableWidth);
-                searchFrame.Height = (int)Math.Round((compact ? 60 : 64) * scale);
-                hero.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
-                searchFrame.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
-                shortcuts.Margin = new Padding(0, 0, 0, compact ? 4 : 14);
-                shortcuts.MaximumSize = new Size(availableWidth, 0);
-                shortcuts.WrapContents = availableWidth < (int)Math.Round(480 * scale);
+                searchFrame.Height = (int)Math.Round((compact ? 56 : 62) * scale);
                 layout.RowStyles[1].SizeType = SizeType.Absolute;
-                layout.RowStyles[1].Height = Math.Max((int)Math.Round((compact ? 72 : 80) * scale),
-                    hero.GetPreferredSize(new Size(availableWidth, 0)).Height + hero.Margin.Vertical);
+                layout.RowStyles[1].Height = (int)Math.Round((compact ? 74 : 86) * scale);
                 layout.RowStyles[2].SizeType = SizeType.Absolute;
-                layout.RowStyles[2].Height = searchFrame.Height + searchFrame.Margin.Vertical;
+                layout.RowStyles[2].Height = searchFrame.Height + (int)Math.Round(10 * scale);
                 layout.RowStyles[3].SizeType = SizeType.Absolute;
-                layout.RowStyles[3].Height = Math.Max((int)Math.Round(90 * scale),
-                    shortcuts.GetPreferredSize(new Size(availableWidth, 0)).Height + shortcuts.Margin.Vertical);
-                AdjustBookmarkAreaHeight();
+                layout.RowStyles[3].Height = (int)Math.Round((compact ? 84 : 92) * scale);
+                title.Font = new Font("Microsoft YaHei UI", compact ? 22F : 25F, FontStyle.Bold, GraphicsUnit.Point);
                 layout.PerformLayout();
             };
             layout.SizeChanged += delegate { updateHomeLayout(); };
@@ -1050,7 +988,6 @@ namespace ChenmuBrowser
                 panel.BeginInvoke((MethodInvoker)delegate { updateHomeLayout(); });
             };
             updateHomeLayout();
-            RefreshHomeBookmarks();
             return panel;
         }
 
@@ -1059,7 +996,7 @@ namespace ChenmuBrowser
             var card = new RoundedPanel
             {
                 Width = 104,
-                Height = 84,
+                Height = 78,
                 Margin = new Padding(6, 3, 6, 3),
                 Padding = new Padding(4),
                 SurfaceColor = Color.White,
@@ -1135,187 +1072,6 @@ namespace ChenmuBrowser
         private async void SearchFromHome()
         {
             await NavigateAsync(_homeSearchBox.Text);
-        }
-
-        private void RefreshHomeBookmarks()
-        {
-            if (_homeBookmarks == null)
-                return;
-
-            _homeBookmarks.Controls.Clear();
-            var bookmarks = ReadBookmarks().Take(12).ToList();
-            if (bookmarks.Count == 0)
-            {
-                var emptyState = new RoundedPanel
-                {
-                    Width = 430,
-                    Height = 54,
-                    Margin = new Padding(0, 4, 0, 0),
-                    Padding = new Padding(10, 6, 10, 6),
-                    SurfaceColor = Color.FromArgb(248, 250, 253),
-                    BorderColor = Color.FromArgb(231, 236, 243),
-                    CornerRadius = 14
-                };
-                var emptyIcon = new Label
-                {
-                    Text = "☆",
-                    Dock = DockStyle.Left,
-                    Width = 44,
-                    TextAlign = ContentAlignment.MiddleCenter,
-                    Font = new Font("Segoe UI Symbol", 18F, FontStyle.Regular, GraphicsUnit.Point),
-                    ForeColor = Color.FromArgb(74, 126, 187),
-                    BackColor = Color.Transparent
-                };
-                var emptyCopy = new TableLayoutPanel
-                {
-                    Dock = DockStyle.Fill,
-                    ColumnCount = 1,
-                    RowCount = 2,
-                    BackColor = Color.Transparent,
-                    Padding = new Padding(2, 2, 0, 0)
-                };
-                emptyCopy.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
-                emptyCopy.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
-                emptyCopy.Controls.Add(new Label
-                {
-                    Text = "收藏常用网页",
-                    Dock = DockStyle.Fill,
-                    TextAlign = ContentAlignment.BottomLeft,
-                    Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
-                    ForeColor = Color.FromArgb(70, 83, 99),
-                    BackColor = Color.Transparent
-                }, 0, 0);
-                emptyCopy.Controls.Add(new Label
-                {
-                    Text = "收藏后会显示在这里；按 Ctrl+D 可快速保存当前页面。",
-                    Dock = DockStyle.Fill,
-                    TextAlign = ContentAlignment.TopLeft,
-                    Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point),
-                    ForeColor = Color.FromArgb(126, 139, 153),
-                    BackColor = Color.Transparent
-                }, 0, 1);
-                emptyState.Controls.Add(emptyCopy);
-                emptyState.Controls.Add(emptyIcon);
-                _homeBookmarks.Controls.Add(emptyState);
-                AdjustBookmarkAreaHeight();
-                return;
-            }
-
-            foreach (var bookmark in bookmarks)
-                _homeBookmarks.Controls.Add(CreateBookmarkTile(bookmark));
-            AdjustBookmarkAreaHeight();
-        }
-
-        private void AdjustBookmarkAreaHeight()
-        {
-            if (_homeBookmarks == null || _bookmarksContainer == null ||
-                _bookmarkArea == null || _bookmarkHeading == null)
-                return;
-
-            var items = _homeBookmarks.Controls.Cast<Control>().ToList();
-            var scale = _bookmarkArea.DeviceDpi / 96F;
-            var rowHeight = items.Count == 0 ? 0 : items.Max(item => item.Height + item.Margin.Vertical);
-            var listHeight = Math.Max((int)Math.Round(60 * scale), Math.Min((int)Math.Round(78 * scale),
-                _homeBookmarks.Padding.Vertical + rowHeight));
-            var areaHeight = _bookmarkHeading.Height + listHeight + _bookmarkArea.Padding.Vertical +
-                _bookmarkArea.Margin.Vertical;
-
-            _bookmarksContainer.Height = areaHeight;
-            _bookmarkArea.Height = areaHeight - _bookmarkArea.Margin.Vertical;
-            var parentLayout = _bookmarksContainer.Parent as TableLayoutPanel;
-            if (parentLayout != null && parentLayout.RowStyles.Count > 4 &&
-                Math.Abs(parentLayout.RowStyles[4].Height - areaHeight) > 0.5F)
-            {
-                parentLayout.RowStyles[4].SizeType = SizeType.Absolute;
-                parentLayout.RowStyles[4].Height = areaHeight;
-                parentLayout.PerformLayout();
-            }
-            _bookmarkArea.PerformLayout();
-            _bookmarksContainer.PerformLayout();
-        }
-
-        private Control CreateBookmarkTile(BookmarkItem bookmark)
-        {
-            var tile = new RoundedPanel
-            {
-                Width = 212,
-                Height = 54,
-                Margin = new Padding(0, 3, 8, 3),
-                Padding = new Padding(6, 4, 6, 4),
-                SurfaceColor = Color.FromArgb(249, 251, 254),
-                BorderColor = Color.FromArgb(230, 236, 243),
-                CornerRadius = 13,
-                Cursor = Cursors.Hand
-            };
-            var content = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount = 2,
-                BackColor = Color.Transparent,
-                Padding = new Padding(0)
-            };
-            content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36F));
-            content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            content.RowStyles.Add(new RowStyle(SizeType.Percent, 55F));
-            content.RowStyles.Add(new RowStyle(SizeType.Percent, 45F));
-            var mark = new Label
-            {
-                Text = "↗",
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Segoe UI Symbol", 13F, FontStyle.Regular, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(64, 119, 181),
-                BackColor = Color.Transparent,
-                Cursor = Cursors.Hand
-            };
-            content.Controls.Add(mark, 0, 0);
-            content.SetRowSpan(mark, 2);
-            var title = new Label
-            {
-                Text = bookmark.Title,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.BottomLeft,
-                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(54, 69, 85),
-                BackColor = Color.Transparent,
-                AutoEllipsis = true,
-                Cursor = Cursors.Hand
-            };
-            var host = new Label
-            {
-                Text = GetBookmarkHost(bookmark.Url),
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.TopLeft,
-                Font = new Font("Microsoft YaHei UI", 8F, FontStyle.Regular, GraphicsUnit.Point),
-                ForeColor = Color.FromArgb(129, 143, 158),
-                BackColor = Color.Transparent,
-                Cursor = Cursors.Hand
-            };
-            content.Controls.Add(title, 1, 0);
-            content.Controls.Add(host, 1, 1);
-            tile.Controls.Add(content);
-            EventHandler openBookmark = async delegate { await NavigateAsync(bookmark.Url); };
-            tile.Click += openBookmark;
-            content.Click += openBookmark;
-            mark.Click += openBookmark;
-            title.Click += openBookmark;
-            host.Click += openBookmark;
-            tile.MouseEnter += delegate
-            {
-                tile.SurfaceColor = Color.FromArgb(243, 248, 254);
-                tile.BorderColor = Color.FromArgb(174, 203, 232);
-            };
-            tile.MouseLeave += delegate
-            {
-                var point = tile.PointToClient(Cursor.Position);
-                if (tile.ClientRectangle.Contains(point))
-                    return;
-                tile.SurfaceColor = Color.FromArgb(249, 251, 254);
-                tile.BorderColor = Color.FromArgb(230, 236, 243);
-            };
-            _toolTip.SetToolTip(tile, bookmark.Url);
-            return tile;
         }
 
         private static string GetBookmarkHost(string url)
@@ -1691,9 +1447,123 @@ namespace ChenmuBrowser
             }
 
             bookmarks.Insert(0, new BookmarkItem { Title = title, Url = url });
-            WriteBookmarks(bookmarks);
-            RefreshHomeBookmarks();
+            if (!WriteBookmarks(bookmarks))
+                return;
             _statusLabel.Text = "已收藏：" + title;
+        }
+
+        private void ShowAddShortcutDialog()
+        {
+            var dialog = new Form
+            {
+                Text = "添加快捷方式",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowInTaskbar = false,
+                AutoScaleMode = AutoScaleMode.Dpi,
+                Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point),
+                ClientSize = new Size(460, 246)
+            };
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 5,
+                Padding = new Padding(18, 14, 18, 12),
+                BackColor = Color.White
+            };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+            var titleLabel = new Label
+            {
+                Text = "名称",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.FromArgb(65, 78, 94)
+            };
+            var titleBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 160 };
+            SetCueBanner(titleBox, "例如：常用网站");
+            var urlLabel = new Label
+            {
+                Text = "网址",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.FromArgb(65, 78, 94)
+            };
+            var urlBox = new TextBox { Dock = DockStyle.Fill, MaxLength = 4096 };
+            SetCueBanner(urlBox, "输入网址，例如 example.com");
+            var buttons = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.RightToLeft,
+                WrapContents = false,
+                Padding = new Padding(0, 8, 0, 0),
+                BackColor = Color.White
+            };
+            var cancelButton = new Button { Text = "取消", Width = 88, Height = 30, DialogResult = DialogResult.Cancel };
+            var saveButton = new Button { Text = "保存", Width = 88, Height = 30, Margin = new Padding(0, 0, 8, 0) };
+            buttons.Controls.Add(cancelButton);
+            buttons.Controls.Add(saveButton);
+            layout.Controls.Add(titleLabel, 0, 0);
+            layout.Controls.Add(titleBox, 0, 1);
+            layout.Controls.Add(urlLabel, 0, 2);
+            layout.Controls.Add(urlBox, 0, 3);
+            layout.Controls.Add(buttons, 0, 4);
+            dialog.Controls.Add(layout);
+            dialog.AcceptButton = saveButton;
+            dialog.CancelButton = cancelButton;
+
+            saveButton.Click += delegate
+            {
+                var value = (urlBox.Text ?? String.Empty).Trim();
+                if (value.Length == 0)
+                {
+                    MessageBox.Show(dialog, "请输入快捷方式的网址。", "添加快捷方式",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    urlBox.Focus();
+                    return;
+                }
+
+                Uri uri;
+                if (!Uri.TryCreate(value, UriKind.Absolute, out uri))
+                {
+                    if (!Uri.TryCreate("https://" + value, UriKind.Absolute, out uri))
+                        uri = null;
+                }
+                if (uri == null || String.IsNullOrWhiteSpace(uri.Host) ||
+                    (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                {
+                    MessageBox.Show(dialog, "请输入有效的 HTTP 或 HTTPS 网址。", "添加快捷方式",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    urlBox.Focus();
+                    return;
+                }
+
+                var shortcutTitle = (titleBox.Text ?? String.Empty).Trim();
+                if (shortcutTitle.Length == 0)
+                    shortcutTitle = uri.Host;
+                var bookmarks = ReadBookmarks();
+                var existing = bookmarks.FirstOrDefault(item =>
+                    String.Equals(item.Url, uri.AbsoluteUri, StringComparison.OrdinalIgnoreCase));
+                if (existing != null)
+                    existing.Title = shortcutTitle;
+                else
+                    bookmarks.Insert(0, new BookmarkItem { Title = shortcutTitle, Url = uri.AbsoluteUri });
+                if (!WriteBookmarks(bookmarks))
+                    return;
+                _statusLabel.Text = "已保存快捷方式：" + shortcutTitle;
+                dialog.DialogResult = DialogResult.OK;
+                dialog.Close();
+            };
+            dialog.Shown += delegate { titleBox.Focus(); };
+            dialog.ShowDialog(this);
         }
 
         private void ShowBookmarksDialog()
@@ -1740,12 +1610,12 @@ namespace ChenmuBrowser
                 if (selected == null)
                     return;
                 items.RemoveAll(b => String.Equals(b.Url, selected.Url, StringComparison.OrdinalIgnoreCase));
-                WriteBookmarks(items);
+                if (!WriteBookmarks(items))
+                    return;
                 var current = list.SelectedIndex;
                 list.Items.Remove(selected);
                 if (list.Items.Count > 0)
                     list.SelectedIndex = Math.Min(current, list.Items.Count - 1);
-                RefreshHomeBookmarks();
             };
             dialog.ShowDialog(this);
         }
@@ -2221,16 +2091,18 @@ namespace ChenmuBrowser
             return result;
         }
 
-        private void WriteBookmarks(List<BookmarkItem> bookmarks)
+        private bool WriteBookmarks(List<BookmarkItem> bookmarks)
         {
             try
             {
                 Directory.CreateDirectory(_dataRoot);
                 File.WriteAllLines(BookmarksPath, bookmarks.Select(b => Uri.EscapeDataString(b.Title ?? String.Empty) + "\t" + b.Url));
+                return true;
             }
             catch (Exception ex)
             {
                 _statusLabel.Text = "书签无法保存：" + ex.Message;
+                return false;
             }
         }
 
