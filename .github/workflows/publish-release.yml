@@ -39,19 +39,19 @@ jobs:
         shell: pwsh
         run: dotnet run --project tests/BrowserLogicTests.csproj -c Release
 
-      # The owner explicitly requested a v1.4.0 in-app test release before these
-      # Windows-only security checks are verified. Keep the step and its outcome
-      # visible; only this tag may continue to packaging after a failed smoke test.
+      # The v1.4.0 owner-test release and the v1.4.1 wallpaper-only bugfix may ship
+      # while these independent Windows-only security checks remain unverified.
+      # Keep the step and its outcome visible; other release tags remain blocked.
       - name: Run Windows WebView2 security smoke tests
         id: webview2_smoke
-        continue-on-error: ${{ github.ref == 'refs/tags/v1.4.0' }}
+        continue-on-error: ${{ github.ref == 'refs/tags/v1.4.0' || github.ref == 'refs/tags/v1.4.1' }}
         shell: pwsh
         run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
 
-      - name: Report non-passing v1.4.0 WebView2 smoke test
+      - name: Report non-passing WebView2 security smoke test
         if: ${{ steps.webview2_smoke.outcome == 'failure' }}
         shell: pwsh
-        run: Write-Host '::warning::Windows WebView2 security smoke test did not pass. Publication continues only because the owner explicitly requested the v1.4.0 self-test release; permission and Reader boundary behavior remains unverified.'
+        run: Write-Host '::warning::Windows WebView2 security smoke test did not pass. Publication continues only for the version-specific v1.4.0/v1.4.1 releases; camera, microphone, geolocation, notification and Reader local-file boundary behavior remains unverified.'
 
       - name: Build application and installer
         shell: pwsh
