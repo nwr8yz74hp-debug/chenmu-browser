@@ -59,6 +59,19 @@ internal static class HomeVisualSmokeTests
             using (var frame = Render(panel))
                 firstRenderColor = AssertCenterColor(frame, firstColor, "壁纸绘制不应被白色遮罩洗淡");
 
+            form.Hide();
+            Application.DoEvents();
+            form.Show();
+            Application.DoEvents();
+            using (var frame = Render(panel))
+            {
+                var restoredColor = AssertCenterColor(frame, firstColor, "窗口从后台重新显示后仍应绘制壁纸");
+                Assert(Math.Abs(restoredColor.R - firstRenderColor.R) <= 2 &&
+                       Math.Abs(restoredColor.G - firstRenderColor.G) <= 2 &&
+                       Math.Abs(restoredColor.B - firstRenderColor.B) <= 2,
+                    "窗口隐藏再显示后壁纸像素应保持稳定");
+            }
+
             for (var index = 0; index < 4; index++)
             {
                 using (var frame = Render(panel))
