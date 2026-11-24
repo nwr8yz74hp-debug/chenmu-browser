@@ -43,12 +43,12 @@ jobs:
         shell: pwsh
         run: dotnet run --project tests/HomeVisualSmokeTests.csproj -c Release
 
-      # The v1.4.0 owner-test release and the v1.4.1 wallpaper-only bugfix may ship
-      # while these independent Windows-only security checks remain unverified.
-      # Keep the step and its outcome visible; other release tags remain blocked.
+      # v1.4.0/v1.4.1 were explicitly allowed to ship with this check incomplete.
+      # The owner has now explicitly requested v1.5.0 before completing the remaining
+      # Windows WebView2 checks; keep the outcome visible and disclose any failure.
       - name: Run Windows WebView2 security smoke tests
         id: webview2_smoke
-        continue-on-error: ${{ github.ref == 'refs/tags/v1.4.0' || github.ref == 'refs/tags/v1.4.1' }}
+        continue-on-error: ${{ github.ref == 'refs/tags/v1.4.0' || github.ref == 'refs/tags/v1.4.1' || github.ref == 'refs/tags/v1.5.0' }}
         shell: pwsh
         timeout-minutes: 8
         run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
@@ -56,7 +56,12 @@ jobs:
       - name: Report non-passing WebView2 security smoke test
         if: ${{ steps.webview2_smoke.outcome == 'failure' }}
         shell: pwsh
-        run: Write-Host '::warning::Windows WebView2 security smoke test did not pass. Publication continues only for the version-specific v1.4.0/v1.4.1 releases; camera, microphone, geolocation, notification and Reader local-file boundary behavior remains unverified.'
+        run: |
+          if ($env:GITHUB_REF_NAME -eq 'v1.5.0') {
+            Write-Host '::warning::The owner requested v1.5.0 publication before completing Windows WebView2 validation. The failed or incomplete smoke checks are not passed; see the release notes and workflow log.'
+          } else {
+            Write-Host '::warning::Windows WebView2 security smoke test did not pass. Publication continues only for the version-specific v1.4.0/v1.4.1 releases; camera, microphone, geolocation, notification and Reader local-file boundary behavior remains unverified.'
+          }
 
       - name: Build application and installer
         shell: pwsh
@@ -118,11 +123,18 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          WEBVIEW2_SMOKE_OUTCOME: ${{ steps.webview2_smoke.outcome }}
         run: |
+          $releaseNotes = Get-Content -LiteralPath 'RELEASE_NOTES.md' -Raw
+          if ($env:WEBVIEW2_SMOKE_OUTCOME -ne 'success') {
+            $releaseNotes += "`n`n> **验证状态：** Windows WebView2 安全与 v1.5 功能 smoke 检查在发布前未通过或未完成。本版本按所有者要求提前发布；请勿将这项检查视为已通过。 [查看本次发布工作流]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID)。"
+          }
+          $releaseNotesPath = Join-Path $env:RUNNER_TEMP 'chenmu-v1.5.0-release-notes.md'
+          [System.IO.File]::WriteAllText($releaseNotesPath, $releaseNotes, [System.Text.UTF8Encoding]::new($false))
           gh release create "$env:GITHUB_REF_NAME" `
             "dist/CHENMU-Browser-Setup-x64.exe" `
             "dist/CHENMU-Browser-Windows-x64.zip" `
             "dist/CHENMU-Browser-source.zip" `
             "dist/SHA256SUMS.txt" `
             --title "CHENMU Browser $env:GITHUB_REF_NAME" `
-            --notes-file RELEASE_NOTES.md
+            --notes-file "$releaseNotesPath"
