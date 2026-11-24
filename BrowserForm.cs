@@ -79,6 +79,8 @@ namespace ChenmuBrowser
         private bool _tabSidebarExpanded;
         private readonly bool _isIsolatedTest;
         private Task<CoreWebView2Environment> _webViewEnvironmentTask;
+        private DebouncedWorkQueue<string[]> _sessionSnapshotQueue;
+        private IntPtr _captionColorsAppliedHandle;
         private readonly List<DownloadEntry> _downloads = new List<DownloadEntry>();
         private bool _blockTrackers = true;
         private bool _restorePreviousSession;
@@ -99,6 +101,8 @@ namespace ChenmuBrowser
             _dataRoot = String.IsNullOrWhiteSpace(dataRoot)
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CHENMU Browser")
                 : dataRoot;
+            _sessionSnapshotQueue = new DebouncedWorkQueue<string[]>(WriteSessionSnapshotFile,
+                exception => ReportPersistenceError("浏览会话无法保存：", exception), 350);
             _isIsolatedTest = isIsolatedTest;
             AutoScaleMode = AutoScaleMode.Dpi;
             Text = _isIsolatedTest ? "CHENMU Browser（隔离测试）" : "CHENMU Browser";
@@ -120,6 +124,7 @@ namespace ChenmuBrowser
             LoadBlocklist();
             LoadSessionSnapshot();
             HandleCreated += delegate { ApplyWindowCaptionColors(); };
+            HandleDestroyed += delegate { _captionColorsAppliedHandle = IntPtr.Zero; };
             Activated += delegate { ApplyWindowCaptionColors(); };
             BuildInterface();
             InitializeV11Features();
@@ -145,8 +150,19 @@ namespace ChenmuBrowser
             {
                 _homeGreetingTimer.Stop();
                 _homeGreetingTimer.Dispose();
+                if (_sessionSnapshotQueue != null)
+                    _sessionSnapshotQueue.Dispose();
+                if (_historyWriteQueue != null)
+                    _historyWriteQueue.Dispose();
             };
-            FormClosing += delegate { SaveSessionSnapshot(); };
+            FormClosing += delegate
+            {
+                SaveSessionSnapshot();
+                if (_sessionSnapshotQueue != null)
+                    _sessionSnapshotQueue.Flush();
+                if (_historyWriteQueue != null)
+                    _historyWriteQueue.Flush();
+            };
         }
 
 #if DEBUG
@@ -181,22 +197,26 @@ namespace ChenmuBrowser
             if (!IsHandleCreated)
                 return;
 
+            var handle = Handle;
+            if (_captionColorsAppliedHandle == handle)
+                return;
             try
             {
                 var lightMode = 0;
-                DwmSetWindowAttribute(Handle, DwmwaUseImmersiveDarkMode, ref lightMode, sizeof(int));
+                DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkMode, ref lightMode, sizeof(int));
                 if (IsWindows11OrGreater())
                 {
                     var caption = ToColorRef(Color.FromArgb(248, 250, 253));
                     var text = ToColorRef(Color.FromArgb(35, 55, 75));
-                    DwmSetWindowAttribute(Handle, DwmwaCaptionColor, ref caption, sizeof(int));
-                    DwmSetWindowAttribute(Handle, DwmwaTextColor, ref text, sizeof(int));
-                    DwmSetWindowAttribute(Handle, DwmwaBorderColor, ref caption, sizeof(int));
+                    DwmSetWindowAttribute(handle, DwmwaCaptionColor, ref caption, sizeof(int));
+                    DwmSetWindowAttribute(handle, DwmwaTextColor, ref text, sizeof(int));
+                    DwmSetWindowAttribute(handle, DwmwaBorderColor, ref caption, sizeof(int));
                 }
-                SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
+                SetWindowPos(handle, IntPtr.Zero, 0, 0, 0, 0,
                     SwpNoSize | SwpNoMove | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
+                _captionColorsAppliedHandle = handle;
             }
-            catch { }
+            catch { _captionColorsAppliedHandle = IntPtr.Zero; }
         }
 
         private static bool IsWindows11OrGreater()
@@ -219,6 +239,25 @@ namespace ChenmuBrowser
         private static int ToColorRef(Color color)
         {
             return color.R | (color.G << 8) | (color.B << 16);
+        }
+
+        private void ReportPersistenceError(string prefix, Exception exception)
+        {
+            if (IsDisposed || Disposing || !IsHandleCreated)
+                return;
+            Action update = delegate
+            {
+                if (!_statusLabel.IsDisposed && !_statusLabel.Disposing)
+                    _statusLabel.Text = prefix + exception.Message;
+            };
+            try
+            {
+                if (InvokeRequired)
+                    BeginInvoke((MethodInvoker)delegate { update(); });
+                else
+                    update();
+            }
+            catch { }
         }
 
         private static Image LoadBrandMark()
@@ -313,18 +352,15 @@ namespace ChenmuBrowser
 
             chrome.Controls.Add(CreateChromeButton("←", "后退（Alt+←）", delegate
             {
-                if (_webView != null && _webView.CoreWebView2 != null && _webView.CoreWebView2.CanGoBack)
-                    _webView.CoreWebView2.GoBack();
+                GoBack();
             }), 0, 0);
             chrome.Controls.Add(CreateChromeButton("→", "前进（Alt+→）", delegate
             {
-                if (_webView != null && _webView.CoreWebView2 != null && _webView.CoreWebView2.CanGoForward)
-                    _webView.CoreWebView2.GoForward();
+                GoForward();
             }), 1, 0);
             chrome.Controls.Add(CreateChromeButton("↻", "刷新页面（Ctrl+R）", delegate
             {
-                if (_webView != null && _webView.CoreWebView2 != null)
-                    _webView.CoreWebView2.Reload();
+                ReloadCurrentPage();
             }), 2, 0);
             chrome.Controls.Add(CreateChromeButton("⌂", "回到起始页", ShowHomeView), 3, 0);
 
@@ -1122,19 +1158,25 @@ namespace ChenmuBrowser
         private void GoBack()
         {
             if (_webView != null && _webView.CoreWebView2 != null && _webView.CoreWebView2.CanGoBack)
+            {
                 _webView.CoreWebView2.GoBack();
+            }
         }
 
         private void GoForward()
         {
             if (_webView != null && _webView.CoreWebView2 != null && _webView.CoreWebView2.CanGoForward)
+            {
                 _webView.CoreWebView2.GoForward();
+            }
         }
 
         private void ReloadCurrentPage()
         {
             if (_webView != null && _webView.CoreWebView2 != null)
+            {
                 _webView.CoreWebView2.Reload();
+            }
         }
 
         private void CopyCurrentUrl()
@@ -3112,7 +3154,7 @@ namespace ChenmuBrowser
         private void SaveSessionSnapshot()
         {
             if (!_restorePreviousSession || _isIsolatedTest || _isRestoringSession ||
-                _startupSessionUrls.Count > 0 || Disposing || IsDisposed)
+                _startupSessionUrls.Count > 0 || Disposing || IsDisposed || _sessionSnapshotQueue == null)
                 return;
             try
             {
@@ -3134,8 +3176,7 @@ namespace ChenmuBrowser
                     savedTabs = savedTabs.Skip(savedTabs.Count - maximumTabs).ToList();
                 if (savedTabs.Count == 0)
                 {
-                    if (File.Exists(SessionPath))
-                        File.Delete(SessionPath);
+                    _sessionSnapshotQueue.Queue(null);
                     return;
                 }
 
@@ -3144,13 +3185,23 @@ namespace ChenmuBrowser
                     activeIndex = savedTabs.Count - 1;
                 var lines = new List<string> { "activeIndex=" + activeIndex.ToString(CultureInfo.InvariantCulture) };
                 lines.AddRange(savedTabs.Select(item => "url=" + Uri.EscapeDataString(item.Value)));
-                AtomicTextFile.WriteAllLines(SessionPath, lines);
+                _sessionSnapshotQueue.Queue(lines.ToArray());
             }
             catch (Exception ex)
             {
-                if (!_statusLabel.IsDisposed && !_statusLabel.Disposing)
-                    _statusLabel.Text = "浏览会话无法保存：" + ex.Message;
+                ReportPersistenceError("浏览会话无法保存：", ex);
             }
+        }
+
+        private void WriteSessionSnapshotFile(string[] lines)
+        {
+            if (lines == null || lines.Length == 0)
+            {
+                if (File.Exists(SessionPath))
+                    File.Delete(SessionPath);
+                return;
+            }
+            AtomicTextFile.WriteAllLines(SessionPath, lines);
         }
 
         private List<BookmarkItem> ReadBookmarks()

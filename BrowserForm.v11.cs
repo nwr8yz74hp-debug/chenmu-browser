@@ -26,6 +26,9 @@ namespace ChenmuBrowser
         private Label _homeBrandLabel;
         private Label _homeGreetingLabel;
         private Label _homeClockLabel;
+        private List<BrowserHistoryRecord> _historyEntries = new List<BrowserHistoryRecord>();
+        private bool _historyLoaded;
+        private DebouncedWorkQueue<List<BrowserHistoryRecord>> _historyWriteQueue;
         private string HistoryPath { get { return Path.Combine(_dataRoot, "history.tsv"); } }
         private string DownloadHistoryPath { get { return Path.Combine(_dataRoot, "downloads.tsv"); } }
         private string ReaderPositionPath { get { return Path.Combine(_dataRoot, "reader-positions.tsv"); } }
@@ -34,6 +37,9 @@ namespace ChenmuBrowser
 
         private void InitializeV11Features()
         {
+            _historyWriteQueue = new DebouncedWorkQueue<List<BrowserHistoryRecord>>(
+                entries => BrowserHistoryStorage.Write(HistoryPath, entries),
+                exception => ReportPersistenceError("历史记录无法保存：", exception), 350);
             _homeGreetingTimer.Interval = 30000;
             _homeGreetingTimer.Tick += delegate { RefreshHomeGreeting(); };
             _homeGreetingTimer.Start();
@@ -99,18 +105,21 @@ namespace ChenmuBrowser
             }
             catch (Exception ex)
             {
-                if (!IsDisposed && !Disposing)
-                    _statusLabel.Text = "历史记录无法保存：" + ex.Message;
+                ReportPersistenceError("历史记录无法保存：", ex);
             }
         }
 
         private List<BrowserHistoryRecord> ReadHistoryEntries()
         {
-            var entries = BrowserHistoryStorage.Read(HistoryPath);
-            var pruned = PruneHistory(entries);
-            if (pruned.Count != entries.Count)
-                WriteHistoryEntries(pruned);
-            return pruned;
+            if (!_historyLoaded)
+            {
+                var stored = BrowserHistoryStorage.Read(HistoryPath);
+                _historyEntries = PruneHistory(stored);
+                _historyLoaded = true;
+                if (!_isIsolatedTest && _historyEntries.Count != stored.Count && _historyWriteQueue != null)
+                    _historyWriteQueue.Queue(new List<BrowserHistoryRecord>(_historyEntries));
+            }
+            return new List<BrowserHistoryRecord>(_historyEntries);
         }
 
         private List<BrowserHistoryRecord> PruneHistory(IEnumerable<BrowserHistoryRecord> entries)
@@ -120,15 +129,10 @@ namespace ChenmuBrowser
 
         private void WriteHistoryEntries(List<BrowserHistoryRecord> entries)
         {
-            try
-            {
-                BrowserHistoryStorage.Write(HistoryPath, entries);
-            }
-            catch (Exception ex)
-            {
-                if (!IsDisposed && !Disposing)
-                    _statusLabel.Text = "历史记录无法保存：" + ex.Message;
-            }
+            _historyEntries = PruneHistory(entries);
+            _historyLoaded = true;
+            if (!_isIsolatedTest && _historyWriteQueue != null)
+                _historyWriteQueue.Queue(new List<BrowserHistoryRecord>(_historyEntries));
         }
 
         private void LoadDownloadHistory()
@@ -220,9 +224,15 @@ namespace ChenmuBrowser
         {
             try
             {
+                if (!_isIsolatedTest && _historyWriteQueue != null)
+                    _historyWriteQueue.Flush();
                 if (File.Exists(HistoryPath))
                     File.Delete(HistoryPath);
-                return !File.Exists(HistoryPath);
+                if (File.Exists(HistoryPath))
+                    return false;
+                _historyEntries = new List<BrowserHistoryRecord>();
+                _historyLoaded = true;
+                return true;
             }
             catch (Exception ex)
             {
@@ -449,6 +459,7 @@ namespace ChenmuBrowser
             if (dialog.ShowDialog(this) != DialogResult.OK)
                 return;
             _searchEngine = engine.SelectedIndex == 1 ? "bing" : engine.SelectedIndex == 2 ? "soumu" : "google";
+            var historyRetentionChanged = _historyRetentionDays != retentionValues[Math.Max(0, retention.SelectedIndex)];
             _historyRetentionDays = retentionValues[Math.Max(0, retention.SelectedIndex)];
             _downloadHistoryRetentionDays = retentionValues[Math.Max(0, downloadRetention.SelectedIndex)];
             _blockTrackers = block.Checked;
@@ -468,13 +479,22 @@ namespace ChenmuBrowser
             {
                 if (_restorePreviousSession)
                     SaveSessionSnapshot();
-                else if (File.Exists(SessionPath))
+                else
                 {
-                    try { File.Delete(SessionPath); }
+                    try
+                    {
+                        if (_sessionSnapshotQueue != null)
+                            _sessionSnapshotQueue.Flush();
+                        if (File.Exists(SessionPath))
+                            File.Delete(SessionPath);
+                    }
                     catch { _statusLabel.Text = "会话恢复已关闭，但旧快照无法删除。"; }
                 }
             }
-            ReadHistoryEntries();
+            if (historyRetentionChanged)
+                WriteHistoryEntries(ReadHistoryEntries());
+            else
+                ReadHistoryEntries();
             PersistDownloadHistory();
             if (animationsChanged)
                 ApplyPageAnimations();

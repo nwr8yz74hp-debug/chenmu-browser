@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using ChenmuBrowser;
 
 internal static class BrowserLogicTests
@@ -102,6 +103,34 @@ internal static class BrowserLogicTests
             Assert(Directory.GetFiles(root, "*.tmp").Length == 0, "原子替换后清理临时文件");
         }
         finally { TryDelete(root); }
+    }
+
+    private static void TestDebouncedWorkQueue()
+    {
+        var writes = new List<string>();
+        int callerThread = Thread.CurrentThread.ManagedThreadId;
+        int writerThread = callerThread;
+        using (var queue = new DebouncedWorkQueue<string>(value =>
+        {
+            writerThread = Thread.CurrentThread.ManagedThreadId;
+            lock (writes)
+                writes.Add(value);
+        }, null, 250))
+        {
+            queue.Queue("stale snapshot");
+            queue.Queue("latest snapshot");
+            queue.Flush();
+        }
+        Assert(writes.Count == 1 && writes[0] == "latest snapshot", "防抖写入将连续变化合并为最新快照");
+        Assert(writerThread != callerThread, "持久化回调在线程池执行而非调用线程");
+
+        var closeWrites = new List<string>();
+        var closingQueue = new DebouncedWorkQueue<string>(value => closeWrites.Add(value), null, 5000);
+        closingQueue.Queue("last snapshot");
+        closingQueue.Dispose();
+        closingQueue.Queue("must be ignored after dispose");
+        Assert(closeWrites.Count == 1 && closeWrites[0] == "last snapshot",
+            "Dispose 原子停止新工作并在返回前刷出最后一份待写快照");
     }
 
     private static void TestReaderPathBoundary()
@@ -321,6 +350,7 @@ internal static class BrowserLogicTests
         TestBookmarkHtmlVariations();
         TestDomainRules();
         TestAtomicTextFile();
+        TestDebouncedWorkQueue();
         TestReaderPathBoundary();
         TestBrowserHistoryStorage();
         TestBrowserHistoryOversizedRead();

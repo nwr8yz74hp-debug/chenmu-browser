@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Net;
@@ -49,7 +50,7 @@ internal static class WindowsWebView2SmokeTests
         {
             string browserData = Path.Combine(root, "browser-data");
             Directory.CreateDirectory(browserData);
-            File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.4.3\r\n", new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.4.4\r\n", new UTF8Encoding(false));
             using (var server = new LocalTestServer())
             using (var browser = new BrowserForm(browserData, true, 1))
             {
@@ -62,7 +63,8 @@ internal static class WindowsWebView2SmokeTests
                             TestWallpaperMenuLifecycle(browser);
                             await TestDefaultDenyPermissionsAsync(browser, server);
                             await TestReaderSubresourceBoundaryAsync(root);
-                            Console.WriteLine("PASS: WebView2 permission default-deny and Reader HTML/SVG subresource boundary.");
+                            await TestBackgroundResumeAsync(browser);
+                            Console.WriteLine("PASS: permission, Reader boundary and background-resume regressions.");
                         }
                         catch (Exception ex)
                         {
@@ -81,7 +83,7 @@ internal static class WindowsWebView2SmokeTests
             if (_failure != null)
                 throw _failure;
             if (!_updateNoticeValidated)
-                throw new InvalidOperationException("The v1.4.3 update-complete dialog was not visually validated.");
+                throw new InvalidOperationException("The v1.4.4 update-complete dialog was not visually validated.");
             if (!_wallpaperMenuDisposedOnBrowserClose)
                 throw new InvalidOperationException("The wallpaper ContextMenuStrip was not disposed with BrowserForm.");
             return 0;
@@ -119,14 +121,15 @@ internal static class WindowsWebView2SmokeTests
                     };
                     EnumChildWindows(dialog, callback, IntPtr.Zero);
                     var message = String.Join(Environment.NewLine, text);
-                    if (!message.Contains("已更新至 v1.4.3") ||
-                        !message.Contains("现在只展示当前版本的中文更新说明") ||
+                    if (!message.Contains("已更新至 v1.4.4") ||
+                        !message.Contains("切回前台时多余的窗口标题栏重算") ||
+                        message.Contains("更新完成弹窗误显示过往版本更新内容") ||
                         message.Contains("修复新标签页壁纸被白色遮罩洗淡") ||
                         message.Contains("ContextMenuStrip 已释放异常"))
-                        throw new InvalidOperationException("The visible update dialog did not contain only the current v1.4.3 changelog: " + message);
+                        throw new InvalidOperationException("The visible update dialog did not contain only the current v1.4.4 changelog: " + message);
 
                     _updateNoticeValidated = true;
-                    Console.WriteLine("PASS: visible v1.4.3 update dialog contains only the current Chinese changelog.");
+                    Console.WriteLine("PASS: visible v1.4.4 update dialog contains only the current Chinese changelog.");
                 }
                 catch (Exception ex)
                 {
@@ -143,7 +146,7 @@ internal static class WindowsWebView2SmokeTests
             if (DateTime.UtcNow >= deadline)
             {
                 timer.Stop();
-                _failure = new TimeoutException("The v1.4.3 update-complete dialog did not appear within 15 seconds.");
+                _failure = new TimeoutException("The v1.4.4 update-complete dialog did not appear within 15 seconds.");
                 try { browser.Close(); }
                 catch { }
             }
@@ -186,6 +189,79 @@ internal static class WindowsWebView2SmokeTests
 
         Console.WriteLine("PASS: wallpaper ContextMenuStrip remains reusable after closing and is disposed with BrowserForm.");
     }
+
+    private static async Task TestBackgroundResumeAsync(BrowserForm browser)
+    {
+        await EnsureBrowserWebViewAsync(browser);
+        var webViewField = typeof(BrowserForm).GetField("_webView", BindingFlags.Instance | BindingFlags.NonPublic);
+        var webView = webViewField == null ? null : webViewField.GetValue(browser) as WebView2;
+        if (webView == null || webView.CoreWebView2 == null)
+            throw new InvalidOperationException("The browser WebView2 control did not initialize for resume testing.");
+        var core = webView.CoreWebView2;
+        if (String.IsNullOrWhiteSpace(core.Source))
+            throw new InvalidOperationException("The browser has no loaded page to preserve during resume testing.");
+
+        string sourceBefore = core.Source;
+        string sentinel = "chenmu-resume-" + Guid.NewGuid().ToString("N");
+        await core.ExecuteScriptAsync("window.__chenmuResumeSentinel=" + JsonString(sentinel) + "; 'ready'");
+        int navigationStarts = 0;
+        EventHandler<CoreWebView2NavigationStartingEventArgs> navigationHandler = delegate { navigationStarts++; };
+        core.NavigationStarting += navigationHandler;
+        try
+        {
+            using (var probe = new NonClientCalcProbe(browser.Handle))
+            {
+                browser.Hide();
+                await WaitUntilAsync(() => !browser.Visible, 2000);
+                await Task.Delay(100);
+                int nonClientCalculationsBefore = probe.NonClientCalculationCount;
+                var activated = new TaskCompletionSource<bool>();
+                EventHandler activatedHandler = delegate { activated.TrySetResult(true); };
+                browser.Activated += activatedHandler;
+                var stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    browser.Show();
+                    browser.Activate();
+                    browser.BringToFront();
+                    var activationResult = await Task.WhenAny(activated.Task, Task.Delay(5000));
+                    if (activationResult != activated.Task)
+                        throw new TimeoutException("The browser window did not reactivate within 5 seconds.");
+                    await activated.Task;
+                }
+                finally
+                {
+                    browser.Activated -= activatedHandler;
+                }
+                stopwatch.Stop();
+
+                var scriptTask = core.ExecuteScriptAsync("window.__chenmuResumeSentinel===" + JsonString(sentinel));
+                var scriptResult = await Task.WhenAny(scriptTask, Task.Delay(5000));
+                if (scriptResult != scriptTask)
+                    throw new TimeoutException("The page did not respond to JavaScript within 5 seconds after resume.");
+                if (await scriptTask != "true")
+                    throw new InvalidOperationException("The page's in-memory DOM state was lost while returning to the foreground.");
+                if (!String.Equals(core.Source, sourceBefore, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("The page URL changed while returning to the foreground.");
+                if (navigationStarts != 0)
+                    throw new InvalidOperationException("Returning to the foreground unexpectedly started " + navigationStarts + " navigation(s).");
+                if (probe.NonClientCalculationCount != nonClientCalculationsBefore)
+                    throw new InvalidOperationException("The browser recalculated its non-client frame when merely reactivated.");
+                if (stopwatch.ElapsedMilliseconds > 5000)
+                    throw new TimeoutException("The browser took " + stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) + " ms to reactivate; limit is 5000 ms.");
+
+                Console.WriteLine("PASS: hide/resume " + stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    " ms; page responsive; URL/DOM preserved; navigation delta=0; WM_NCCALCSIZE delta=0.");
+            }
+        }
+        finally
+        {
+            core.NavigationStarting -= navigationHandler;
+            if (!browser.Visible)
+                browser.Show();
+        }
+    }
+
 
     private static async Task TestDefaultDenyPermissionsAsync(BrowserForm browser, LocalTestServer server)
     {
@@ -491,6 +567,31 @@ internal static class WindowsWebView2SmokeTests
     {
         try { if (Directory.Exists(path)) Directory.Delete(path, true); }
         catch { }
+    }
+
+    private sealed class NonClientCalcProbe : NativeWindow, IDisposable
+    {
+        private const int WmNcCalcSize = 0x0083;
+
+        public int NonClientCalculationCount { get; private set; }
+
+        public NonClientCalcProbe(IntPtr handle)
+        {
+            AssignHandle(handle);
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == WmNcCalcSize)
+                NonClientCalculationCount++;
+            base.WndProc(ref message);
+        }
+
+        public void Dispose()
+        {
+            if (Handle != IntPtr.Zero)
+                ReleaseHandle();
+        }
     }
 
     private sealed class ObservedPermission
