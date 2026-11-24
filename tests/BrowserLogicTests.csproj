@@ -17,5 +17,6 @@
     <Compile Include="../ReaderPathPolicy.cs" Link="ReaderPathPolicy.cs" />
     <Compile Include="../ReaderPositionStorage.cs" Link="ReaderPositionStorage.cs" />
     <Compile Include="../SitePermissionStorage.cs" Link="SitePermissionStorage.cs" />
+    <Compile Include="../UpdateNoticeContent.cs" Link="UpdateNoticeContent.cs" />
   </ItemGroup>
 </Project>

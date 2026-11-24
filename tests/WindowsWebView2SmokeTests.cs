@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -20,6 +21,22 @@ internal static class WindowsWebView2SmokeTests
 {
     private static Exception _failure;
     private static bool _wallpaperMenuDisposedOnBrowserClose;
+    private static bool _updateNoticeValidated;
+
+    private delegate bool EnumChildWindowCallback(IntPtr handle, IntPtr parameter);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindow(string className, string windowName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumChildWindows(IntPtr parent, EnumChildWindowCallback callback, IntPtr parameter);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int GetWindowText(IntPtr handle, StringBuilder text, int maximumCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
 
     [STAThread]
     private static int Main()
@@ -30,33 +47,41 @@ internal static class WindowsWebView2SmokeTests
         Application.SetCompatibleTextRenderingDefault(false);
         try
         {
+            string browserData = Path.Combine(root, "browser-data");
+            Directory.CreateDirectory(browserData);
+            File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.4.3\r\n", new UTF8Encoding(false));
             using (var server = new LocalTestServer())
-            using (var browser = new BrowserForm(Path.Combine(root, "browser-data"), true, 1))
+            using (var browser = new BrowserForm(browserData, true, 1))
             {
-                browser.Shown += async delegate
+                using (StartUpdateNoticeDialogValidation(browser))
                 {
-                    try
+                    browser.Shown += async delegate
                     {
-                        TestWallpaperMenuLifecycle(browser);
-                        await TestDefaultDenyPermissionsAsync(browser, server);
-                        await TestReaderSubresourceBoundaryAsync(root);
-                        Console.WriteLine("PASS: WebView2 permission default-deny and Reader HTML/SVG subresource boundary.");
-                    }
-                    catch (Exception ex)
-                    {
-                        _failure = ex;
-                        Console.Error.WriteLine(ex);
-                    }
-                    finally
-                    {
-                        try { browser.Close(); }
-                        catch { }
-                    }
-                };
-                Application.Run(browser);
+                        try
+                        {
+                            TestWallpaperMenuLifecycle(browser);
+                            await TestDefaultDenyPermissionsAsync(browser, server);
+                            await TestReaderSubresourceBoundaryAsync(root);
+                            Console.WriteLine("PASS: WebView2 permission default-deny and Reader HTML/SVG subresource boundary.");
+                        }
+                        catch (Exception ex)
+                        {
+                            _failure = ex;
+                            Console.Error.WriteLine(ex);
+                        }
+                        finally
+                        {
+                            try { browser.Close(); }
+                            catch { }
+                        }
+                    };
+                    Application.Run(browser);
+                }
             }
             if (_failure != null)
                 throw _failure;
+            if (!_updateNoticeValidated)
+                throw new InvalidOperationException("The v1.4.3 update-complete dialog was not visually validated.");
             if (!_wallpaperMenuDisposedOnBrowserClose)
                 throw new InvalidOperationException("The wallpaper ContextMenuStrip was not disposed with BrowserForm.");
             return 0;
@@ -70,6 +95,61 @@ internal static class WindowsWebView2SmokeTests
         {
             TryDeleteDirectory(root);
         }
+    }
+
+    private static System.Windows.Forms.Timer StartUpdateNoticeDialogValidation(BrowserForm browser)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        var timer = new System.Windows.Forms.Timer { Interval = 100 };
+        timer.Tick += delegate
+        {
+            var dialog = FindWindow("#32770", "CHENMU Browser 更新完成");
+            if (dialog != IntPtr.Zero)
+            {
+                timer.Stop();
+                try
+                {
+                    var text = new List<string>();
+                    EnumChildWindowCallback callback = delegate(IntPtr child, IntPtr ignored)
+                    {
+                        var buffer = new StringBuilder(4096);
+                        if (GetWindowText(child, buffer, buffer.Capacity) > 0)
+                            text.Add(buffer.ToString());
+                        return true;
+                    };
+                    EnumChildWindows(dialog, callback, IntPtr.Zero);
+                    var message = String.Join(Environment.NewLine, text);
+                    if (!message.Contains("已更新至 v1.4.3") ||
+                        !message.Contains("现在只展示当前版本的中文更新说明") ||
+                        message.Contains("修复新标签页壁纸被白色遮罩洗淡") ||
+                        message.Contains("ContextMenuStrip 已释放异常"))
+                        throw new InvalidOperationException("The visible update dialog did not contain only the current v1.4.3 changelog: " + message);
+
+                    _updateNoticeValidated = true;
+                    Console.WriteLine("PASS: visible v1.4.3 update dialog contains only the current Chinese changelog.");
+                }
+                catch (Exception ex)
+                {
+                    _failure = ex;
+                    Console.Error.WriteLine(ex);
+                }
+                finally
+                {
+                    SendMessage(dialog, 0x0111, new IntPtr(1), IntPtr.Zero);
+                }
+                return;
+            }
+
+            if (DateTime.UtcNow >= deadline)
+            {
+                timer.Stop();
+                _failure = new TimeoutException("The v1.4.3 update-complete dialog did not appear within 15 seconds.");
+                try { browser.Close(); }
+                catch { }
+            }
+        };
+        timer.Start();
+        return timer;
     }
 
     private static void TestWallpaperMenuLifecycle(BrowserForm browser)
