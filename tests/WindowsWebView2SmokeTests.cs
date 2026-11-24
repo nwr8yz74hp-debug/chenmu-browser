@@ -31,6 +31,9 @@ internal static class WindowsWebView2SmokeTests
     private static extern IntPtr FindWindow(string className, string windowName);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetDlgItem(IntPtr dialog, int identifier);
+
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr handle);
 
@@ -161,8 +164,9 @@ internal static class WindowsWebView2SmokeTests
                 }
                 finally
                 {
-                    if (!PostMessage(dialog, 0x0111, new IntPtr(1), IntPtr.Zero))
-                        Console.Error.WriteLine("Could not post OK to the update notice dialog.");
+                    var okButton = GetDlgItem(dialog, 1);
+                    if (okButton == IntPtr.Zero || !PostMessage(okButton, 0x00F5, IntPtr.Zero, IntPtr.Zero))
+                        Console.Error.WriteLine("Could not click OK on the update notice dialog.");
                 }
                 return;
             }
@@ -236,7 +240,11 @@ internal static class WindowsWebView2SmokeTests
             await NavigateHistoryAndWaitAsync(browser, firstCore, "GoBack", a);
             await NavigateHistoryAndWaitAsync(browser, firstCore, "GoForward", b);
             await NavigateHistoryAndWaitAsync(browser, firstCore, "GoForward", c);
-            Console.WriteLine("PASS: HTTP A→B→C back/forward preserves history without re-navigation loops.");
+            FocusWebViewAndSendKeys(browser, "%{LEFT}");
+            await WaitUntilAsync(() => String.Equals(firstCore.Source, new Uri(b).AbsoluteUri, StringComparison.OrdinalIgnoreCase), 12000);
+            FocusWebViewAndSendKeys(browser, "%{RIGHT}");
+            await WaitUntilAsync(() => String.Equals(firstCore.Source, new Uri(c).AbsoluteUri, StringComparison.OrdinalIgnoreCase), 12000);
+            Console.WriteLine("PASS: HTTP A→B→C history buttons and Alt+Left/Right keyboard navigation preserve history.");
 
             var createTab = typeof(BrowserForm).GetMethod("CreateNewTab", BindingFlags.Instance | BindingFlags.NonPublic);
             if (createTab == null)
@@ -271,13 +279,13 @@ internal static class WindowsWebView2SmokeTests
             string findUrl = server.Url + "find-page";
             await NavigateCoreAndWaitAsync(browser, core, findUrl);
 
-            var showFind = typeof(BrowserForm).GetMethod("ShowFindBar", BindingFlags.Instance | BindingFlags.NonPublic);
             var findTextField = typeof(BrowserForm).GetField("_findTextBox", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (showFind == null || findTextField == null)
+            if (findTextField == null)
                 throw new InvalidOperationException("The v1.5 find bar was not found.");
-            showFind.Invoke(browser, null);
+            FocusWebViewAndSendKeys(browser, "^f");
+            await WaitUntilAsync(() => findTextField.GetValue(browser) is TextBox, 5000);
             var findText = findTextField.GetValue(browser) as TextBox;
-            if (findText == null)
+            if (findText == null || findText.FindForm() == null || !findText.FindForm().Visible)
                 throw new InvalidOperationException("Ctrl+F did not create its find bar input.");
             findText.Text = "needle";
             await WaitUntilAsync(() => core.Find.MatchCount >= 2, 5000);
@@ -296,6 +304,10 @@ internal static class WindowsWebView2SmokeTests
             setZoom.Invoke(browser, new object[] { 1.35 });
             if (Math.Abs(((WebView2)GetWebViewForTab(firstTab)).ZoomFactor - 1.35) > 0.001)
                 throw new InvalidOperationException("The active tab did not apply its 135% zoom.");
+            FocusWebViewAndSendKeys(browser, "^{ADD}");
+            await WaitUntilAsync(() => Math.Abs(((WebView2)GetWebViewForTab(firstTab)).ZoomFactor - 1.45) < 0.001, 5000);
+            if (Math.Abs(((WebView2)GetWebViewForTab(firstTab)).ZoomFactor - 1.45) > 0.001)
+                throw new InvalidOperationException("Ctrl+Plus did not adjust zoom in the WebView-focused page.");
             createTab.Invoke(browser, null);
             await EnsureBrowserWebViewAsync(browser);
             var secondTab = GetActiveTab(browser);
@@ -350,10 +362,7 @@ internal static class WindowsWebView2SmokeTests
             if (!String.Equals((string)snapshot.GetType().GetProperty("Url").GetValue(snapshot, null), new Uri(closedUrl).AbsoluteUri, StringComparison.OrdinalIgnoreCase) ||
                 Math.Abs((double)snapshot.GetType().GetProperty("ZoomFactor").GetValue(snapshot, null) - 1.3) > 0.001)
                 throw new InvalidOperationException("The recent-tab snapshot did not preserve URL and zoom.");
-            var restore = typeof(BrowserForm).GetMethod("RestoreMostRecentlyClosedTab", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (restore == null)
-                throw new InvalidOperationException("The recent-tab restore shortcut implementation was not found.");
-            restore.Invoke(browser, null);
+            FocusWebViewAndSendKeys(browser, "^+t");
             await WaitUntilAsync(() =>
             {
                 var active = GetActiveTab(browser);
@@ -367,6 +376,22 @@ internal static class WindowsWebView2SmokeTests
                 throw new InvalidOperationException("Restoring a recently closed tab did not restore its zoom.");
             Console.WriteLine("PASS: recent-tab restore retains only ordinary pages and preserves URL/zoom.");
         }
+    }
+
+    private static void FocusWebViewAndSendKeys(BrowserForm browser, string sequence)
+    {
+        var view = GetWebViewForTab(GetActiveTab(browser)) as WebView2;
+        if (view == null || !browser.Visible)
+            throw new InvalidOperationException("Cannot send a keyboard shortcut because the active WebView is not visible.");
+        browser.Activate();
+        SetForegroundWindow(browser.Handle);
+        if (!view.Focus())
+            throw new InvalidOperationException("Could not focus the active WebView before sending " + sequence + ".");
+        Application.DoEvents();
+        if (!view.ContainsFocus)
+            throw new InvalidOperationException("The active WebView did not retain keyboard focus before sending " + sequence + ".");
+        SendKeys.SendWait(sequence);
+        Application.DoEvents();
     }
 
     private static async Task TestV15ExtensionsAsync(BrowserForm browser, string root)

@@ -1007,30 +1007,13 @@ namespace ChenmuBrowser
                 FocusAddress();
                 return true;
             }
-            if (keyData == (Keys.Control | Keys.F))
+            if (IsPageToolShortcut(keyData))
             {
-                ShowFindBar();
-                return true;
-            }
-            if (keyData == (Keys.Control | Keys.Shift | Keys.T))
-            {
-                RestoreMostRecentlyClosedTab();
-                return true;
-            }
-            if (IsZoomInShortcut(keyData))
-            {
-                AdjustActiveTabZoom(1);
-                return true;
-            }
-            if (IsZoomOutShortcut(keyData))
-            {
-                AdjustActiveTabZoom(-1);
-                return true;
-            }
-            if (IsZoomResetShortcut(keyData))
-            {
-                SetActiveTabZoom(BrowserZoomPolicy.Default);
-                return true;
+                // WebView2 forwards accelerator keys to its KeyDown event. Avoid handling
+                // the same shortcut twice when focus is inside its native child window.
+                if (_activeTab != null && _activeTab.WebView != null && _activeTab.WebView.ContainsFocus)
+                    return base.ProcessCmdKey(ref msg, keyData);
+                return HandlePageToolShortcut(keyData);
             }
             if (keyData == (Keys.Control | Keys.O) && _activeTab != null &&
                 _activeTab.IsReader && _activeTab.ReaderView != null)
@@ -1046,16 +1029,6 @@ namespace ChenmuBrowser
             if (keyData == (Keys.Control | Keys.R) || keyData == Keys.F5)
             {
                 ReloadCurrentPage();
-                return true;
-            }
-            if (keyData == (Keys.Alt | Keys.Left))
-            {
-                GoBack();
-                return true;
-            }
-            if (keyData == (Keys.Alt | Keys.Right))
-            {
-                GoForward();
                 return true;
             }
             if (keyData == (Keys.Control | Keys.Shift | Keys.Delete))
@@ -1777,6 +1750,7 @@ namespace ChenmuBrowser
             try
             {
                 webView = new WebView2 { Dock = DockStyle.Fill, Visible = false };
+                webView.KeyDown += WebView_KeyDown;
                 tab.WebView = webView;
                 _viewport.Controls.Add(webView);
                 var environment = await GetWebViewEnvironmentAsync();

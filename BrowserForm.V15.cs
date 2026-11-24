@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 
 namespace ChenmuBrowser
 {
@@ -75,6 +76,45 @@ namespace ChenmuBrowser
         {
             return keyData == (Keys.Control | Keys.D0) ||
                 keyData == (Keys.Control | Keys.NumPad0);
+        }
+
+        private static bool IsPageToolShortcut(Keys keyData)
+        {
+            return keyData == (Keys.Control | Keys.F) ||
+                keyData == (Keys.Control | Keys.Shift | Keys.T) ||
+                keyData == (Keys.Alt | Keys.Left) || keyData == (Keys.Alt | Keys.Right) ||
+                IsZoomInShortcut(keyData) || IsZoomOutShortcut(keyData) || IsZoomResetShortcut(keyData);
+        }
+
+        private bool HandlePageToolShortcut(Keys keyData)
+        {
+            if (keyData == (Keys.Control | Keys.F)) ShowFindBar();
+            else if (keyData == (Keys.Control | Keys.Shift | Keys.T)) RestoreMostRecentlyClosedTab();
+            else if (IsZoomInShortcut(keyData)) AdjustActiveTabZoom(1);
+            else if (IsZoomOutShortcut(keyData)) AdjustActiveTabZoom(-1);
+            else if (IsZoomResetShortcut(keyData)) SetActiveTabZoom(BrowserZoomPolicy.Default);
+            else if (keyData == (Keys.Alt | Keys.Left)) GoBack();
+            else if (keyData == (Keys.Alt | Keys.Right)) GoForward();
+            else return false;
+            return true;
+        }
+
+        private void WebView_KeyDown(object sender, KeyEventArgs e)
+        {
+            var view = sender as WebView2;
+            if (_activeTab == null || !Object.ReferenceEquals(_activeTab.WebView, view))
+                return;
+            var keyData = e.KeyData;
+            if (!IsPageToolShortcut(keyData))
+                return;
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            var tab = _activeTab;
+            BeginInvoke((MethodInvoker)delegate
+            {
+                if (!IsDisposed && !Disposing && Object.ReferenceEquals(tab, _activeTab))
+                    HandlePageToolShortcut(keyData);
+            });
         }
 
         private void ApplyTabZoom(CoreWebView2 core)
