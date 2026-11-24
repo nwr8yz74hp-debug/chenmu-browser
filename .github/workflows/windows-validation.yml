@@ -26,6 +26,10 @@ jobs:
         shell: pwsh
         run: dotnet run --project tests/BrowserLogicTests.csproj -c Release
 
+      - name: Run Windows home wallpaper visual tests
+        shell: pwsh
+        run: dotnet run --project tests/HomeVisualSmokeTests.csproj -c Release
+
       - name: Build application and Windows WebView2 smoke tests
         shell: pwsh
         run: dotnet build tests/WindowsWebView2SmokeTests.csproj -c Release

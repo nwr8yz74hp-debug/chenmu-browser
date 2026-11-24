@@ -152,6 +152,10 @@ namespace ChenmuBrowser
         public Color StartColor { get; set; }
         public Color EndColor { get; set; }
 
+        private Bitmap _wallpaperFrame;
+        private Image _wallpaperFrameSource;
+        private Size _wallpaperFrameSize;
+
         public GradientPanel()
         {
             StartColor = Color.FromArgb(248, 250, 253);
@@ -160,24 +164,81 @@ namespace ChenmuBrowser
                      ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
         }
 
+        protected override void OnBackgroundImageChanged(System.EventArgs e)
+        {
+            base.OnBackgroundImageChanged(e);
+            ResetWallpaperFrame();
+        }
+
+        protected override void OnSizeChanged(System.EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            ResetWallpaperFrame();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                ResetWallpaperFrame();
+            base.Dispose(disposing);
+        }
+
+        private void ResetWallpaperFrame()
+        {
+            if (_wallpaperFrame != null)
+            {
+                _wallpaperFrame.Dispose();
+                _wallpaperFrame = null;
+            }
+            _wallpaperFrameSource = null;
+            _wallpaperFrameSize = Size.Empty;
+        }
+
+        private Bitmap GetWallpaperFrame(Image source)
+        {
+            var size = ClientSize;
+            if (size.Width < 1 || size.Height < 1)
+                return null;
+            if (_wallpaperFrame != null && ReferenceEquals(_wallpaperFrameSource, source) &&
+                _wallpaperFrameSize == size)
+                return _wallpaperFrame;
+
+            var frame = new Bitmap(size.Width, size.Height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            try
+            {
+                using (var graphics = Graphics.FromImage(frame))
+                {
+                    graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    float scale = Math.Max((float)size.Width / source.Width, (float)size.Height / source.Height);
+                    float width = source.Width * scale;
+                    float height = source.Height * scale;
+                    var bounds = new RectangleF((size.Width - width) / 2F, (size.Height - height) / 2F, width, height);
+                    graphics.DrawImage(source, bounds);
+                }
+
+                ResetWallpaperFrame();
+                _wallpaperFrame = frame;
+                _wallpaperFrameSource = source;
+                _wallpaperFrameSize = size;
+                return _wallpaperFrame;
+            }
+            catch
+            {
+                frame.Dispose();
+                throw;
+            }
+        }
+
         protected override void OnPaintBackground(PaintEventArgs e)
         {
             if (Width < 1 || Height < 1)
                 return;
             if (BackgroundImage != null)
             {
-                var image = BackgroundImage;
-                float scale = Math.Max((float)ClientSize.Width / image.Width, (float)ClientSize.Height / image.Height);
-                float width = image.Width * scale;
-                float height = image.Height * scale;
-                var bounds = new RectangleF((ClientSize.Width - width) / 2F, (ClientSize.Height - height) / 2F, width, height);
-                var state = e.Graphics.Save();
-                e.Graphics.SetClip(ClientRectangle);
-                e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                e.Graphics.DrawImage(image, bounds);
-                using (var overlay = new SolidBrush(Color.FromArgb(178, Color.White)))
-                    e.Graphics.FillRectangle(overlay, ClientRectangle);
-                e.Graphics.Restore(state);
+                var frame = GetWallpaperFrame(BackgroundImage);
+                if (frame != null)
+                    e.Graphics.DrawImageUnscaled(frame, ClientRectangle.Location);
                 return;
             }
             using (var brush = new LinearGradientBrush(ClientRectangle, StartColor, EndColor, 90F))
