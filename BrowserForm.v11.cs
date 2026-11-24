@@ -853,31 +853,22 @@ namespace ChenmuBrowser
                 Version noticeVersion;
                 if (!Version.TryParse(versionText.TrimStart('v'), out noticeVersion) || noticeVersion != UpdateService.CurrentVersion)
                     return;
-                var notes = content.Substring(split).Trim();
-                if (String.IsNullOrWhiteSpace(notes))
-                    notes = ReadInstalledReleaseNotes();
-                if (String.IsNullOrWhiteSpace(notes))
-                    notes = "浏览器已更新至 v" + noticeVersion.ToString(3) + "。";
-                MessageBox.Show(this, "已更新至 v" + noticeVersion.ToString(3) + "。\r\n\r\n更新内容：\r\n" + notes,
+                var notes = ReadInstalledReleaseNotes(noticeVersion);
+                MessageBox.Show(this, UpdateNoticeContent.BuildMessage(noticeVersion, notes),
                     "CHENMU Browser 更新完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch { }
         }
 
-        private string ReadInstalledReleaseNotes()
+        private string ReadInstalledReleaseNotes(Version noticeVersion)
         {
             try
             {
                 var path = Path.Combine(Application.StartupPath, "RELEASE_NOTES.md");
                 if (!File.Exists(path))
                     return String.Empty;
-                var bullets = File.ReadAllLines(path, Encoding.UTF8)
-                    .Select(line => line.Trim())
-                    .Where(line => line.StartsWith("- ", StringComparison.Ordinal) ||
-                                   line.StartsWith("* ", StringComparison.Ordinal))
-                    .Select(line => "• " + line.Substring(2).Trim())
-                    .ToList();
-                return String.Join(Environment.NewLine, bullets);
+                return UpdateNoticeContent.ReadCurrentReleaseNotes(
+                    File.ReadAllText(path, Encoding.UTF8), noticeVersion);
             }
             catch { return String.Empty; }
         }

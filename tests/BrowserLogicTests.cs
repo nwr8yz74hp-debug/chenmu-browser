@@ -278,6 +278,30 @@ internal static class BrowserLogicTests
         finally { TryDelete(root); }
     }
 
+    private static void TestUpdateNoticeVersionIsolation()
+    {
+        var cumulativeNotes = "# CHENMU Browser v1.4.2 更新说明\n" +
+            "- 修复新标签页壁纸被白色遮罩洗淡的问题；缓存适配当前窗口尺寸的壁纸绘制帧，减少重开、换图和重绘时的白屏闪烁与卡顿。\n" +
+            "# CHENMU Browser v1.4.1 更新说明\n" +
+            "- 修复主页更换壁纸菜单过早释放的问题。\n" +
+            "# CHENMU Browser v1.4.0 更新说明\n" +
+            "- 收紧 Reader 的本地文件边界。\n";
+
+        var currentNotes = UpdateNoticeContent.ReadCurrentReleaseNotes(cumulativeNotes, new Version(1, 4, 2));
+        Assert(currentNotes == "• 修复新标签页壁纸被白色遮罩洗淡的问题；缓存适配当前窗口尺寸的壁纸绘制帧，减少重开、换图和重绘时的白屏闪烁与卡顿。",
+            "升级说明只提取当前版本标题下的条目");
+        var message = UpdateNoticeContent.BuildMessage(new Version(1, 4, 2), currentNotes);
+        Assert(message.Contains("已更新至 v1.4.2") && message.Contains("更新内容："), "更新弹窗正文标明当前版本和更新内容");
+        Assert(!message.Contains("更换壁纸菜单过早释放") && !message.Contains("收紧 Reader"),
+            "更新弹窗不包含旧版本累计说明");
+
+        var v143Notes = "# CHENMU Browser v1.4.3 更新说明\n- 仅展示当前版本的更新说明。\n" + cumulativeNotes;
+        Assert(UpdateNoticeContent.ReadCurrentReleaseNotes(v143Notes, new Version(1, 4, 3)) ==
+            "• 仅展示当前版本的更新说明。", "后续版本只读取自己的说明区块");
+        Assert(UpdateNoticeContent.ReadCurrentReleaseNotes(cumulativeNotes, new Version(1, 4, 3)) == String.Empty,
+            "缺少目标版本区块时不误用其他版本说明");
+    }
+
     private static string CreateTempDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), "chenmu-logic-test-" + Guid.NewGuid().ToString("N"));
@@ -303,6 +327,7 @@ internal static class BrowserLogicTests
         TestDownloadHistoryStorage();
         TestSitePermissionStorage();
         TestReaderPositionStorage();
+        TestUpdateNoticeVersionIsolation();
         Console.WriteLine("通过：" + _assertions + " 项逻辑断言。");
         return 0;
     }
