@@ -1729,7 +1729,13 @@ namespace ChenmuBrowser
             {
                 Directory.CreateDirectory(_dataRoot);
                 var userDataFolder = Path.Combine(_dataRoot, "WebView2");
-                _webViewEnvironmentTask = CoreWebView2Environment.CreateAsync(null, userDataFolder, null);
+                CoreWebView2EnvironmentOptions options = _isIsolatedTest
+                    ? new CoreWebView2EnvironmentOptions
+                    {
+                        AdditionalBrowserArguments = "--ignore-certificate-errors --use-fake-device-for-media-stream"
+                    }
+                    : null;
+                _webViewEnvironmentTask = CoreWebView2Environment.CreateAsync(null, userDataFolder, options);
             }
             try
             {

@@ -3,8 +3,12 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -100,7 +104,8 @@ internal static class WindowsWebView2SmokeTests
             "try{if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)navigator.mediaDevices.getUserMedia({video:true}).catch(function(){});}catch(e){}" +
             "try{if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)navigator.mediaDevices.getUserMedia({audio:true}).catch(function(){});}catch(e){}" +
             "return 'requested';})()";
-        await core.ExecuteScriptAsync(requestScript);
+        string devToolsParameters = "{\"expression\":" + JsonString(requestScript) + ",\"userGesture\":true,\"returnByValue\":true}";
+        await core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", devToolsParameters);
         DateTime deadline = DateTime.UtcNow.AddSeconds(12);
         while (DateTime.UtcNow < deadline)
         {
@@ -297,6 +302,12 @@ internal static class WindowsWebView2SmokeTests
         return new Uri(Path.GetFullPath(path)).AbsoluteUri;
     }
 
+    private static string JsonString(string value)
+    {
+        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"")
+            .Replace("\r", "\\r").Replace("\n", "\\n") + "\"";
+    }
+
     private static void TryDeleteDirectory(string path)
     {
         try { if (Directory.Exists(path)) Directory.Delete(path, true); }
@@ -314,6 +325,8 @@ internal static class WindowsWebView2SmokeTests
     {
         private readonly TcpListener _listener;
         private readonly Task _serveTask;
+        private readonly RSA _privateKey;
+        private readonly X509Certificate2 _certificate;
         private volatile bool _stopping;
         private readonly byte[] _responseBody = Encoding.UTF8.GetBytes("<!doctype html><html><head><title>permission-test</title></head><body>permission test</body></html>");
 
@@ -321,10 +334,22 @@ internal static class WindowsWebView2SmokeTests
 
         public LocalTestServer()
         {
+            _privateKey = RSA.Create();
+            _privateKey.KeySize = 2048;
+            var certificateRequest = new CertificateRequest("CN=127.0.0.1", _privateKey,
+                HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            var subjectAlternativeName = new SubjectAlternativeNameBuilder();
+            subjectAlternativeName.AddIpAddress(IPAddress.Loopback);
+            certificateRequest.CertificateExtensions.Add(subjectAlternativeName.Build());
+            certificateRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+            certificateRequest.CertificateExtensions.Add(new X509KeyUsageExtension(
+                X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
+            _certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
             var endpoint = (IPEndPoint)_listener.LocalEndpoint;
-            Url = "http://127.0.0.1:" + endpoint.Port.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/";
+            Url = "https://127.0.0.1:" + endpoint.Port.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/";
             _serveTask = Task.Run((Func<Task>)ServeAsync);
         }
 
@@ -337,8 +362,9 @@ internal static class WindowsWebView2SmokeTests
                 {
                     client = await _listener.AcceptTcpClientAsync();
                     using (client)
-                    using (var stream = client.GetStream())
+                    using (var stream = new SslStream(client.GetStream(), false))
                     {
+                        await stream.AuthenticateAsServerAsync(_certificate, false, SslProtocols.Tls12, false);
                         var request = new byte[2048];
                         try { await stream.ReadAsync(request, 0, request.Length); }
                         catch { }
@@ -352,6 +378,7 @@ internal static class WindowsWebView2SmokeTests
                 }
                 catch (ObjectDisposedException) { break; }
                 catch (SocketException) { if (_stopping) break; }
+                catch (AuthenticationException) { }
                 catch (IOException) { }
                 finally { if (client != null) client.Close(); }
             }
@@ -364,6 +391,8 @@ internal static class WindowsWebView2SmokeTests
             catch { }
             try { _serveTask.Wait(1000); }
             catch { }
+            _certificate.Dispose();
+            _privateKey.Dispose();
         }
     }
 }
