@@ -35,6 +35,14 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME must match project version v$version"
           }
 
+      - name: Run cross-platform logic tests
+        shell: pwsh
+        run: dotnet run --project tests/BrowserLogicTests.csproj -c Release
+
+      - name: Run Windows WebView2 security smoke tests
+        shell: pwsh
+        run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
+
       - name: Build application and installer
         shell: pwsh
         run: .\build-windows.ps1

@@ -68,6 +68,7 @@ namespace ChenmuBrowser
         private readonly HashSet<string> _allowedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private Panel _homeView;
+        private GradientPanel _homeGradientPanel;
         private Panel _errorView;
         private TextBox _homeSearchBox;
         private Button _homeSearchEngineButton;
@@ -717,7 +718,18 @@ namespace ChenmuBrowser
             tab.IsHome = false;
             tab.IsReader = true;
             tab.Title = "CHENMU Reader";
-            var readerView = new ReaderView(GetWebViewEnvironmentAsync)
+            var readerView = new ReaderView(GetWebViewEnvironmentAsync,
+                delegate(string path, int pageCount)
+                {
+                    return _restoreReaderPosition
+                        ? ReaderPositionStorage.GetPageIndex(ReaderPositionPath, path, pageCount)
+                        : 0;
+                },
+                delegate(string path, int pageIndex)
+                {
+                    if (_restoreReaderPosition && !_isIsolatedTest)
+                        ReaderPositionStorage.Save(ReaderPositionPath, path, pageIndex);
+                })
             {
                 Dock = DockStyle.Fill,
                 Visible = false
@@ -1200,6 +1212,8 @@ namespace ChenmuBrowser
                 StartColor = Color.FromArgb(249, 251, 255),
                 EndColor = Color.FromArgb(239, 245, 252)
             };
+            _homeGradientPanel = panel;
+            panel.BackgroundImage = LoadHomeWallpaperImage();
             var layout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -1425,6 +1439,7 @@ namespace ChenmuBrowser
             shortcuts.Controls.Add(CreateShortcutCard("＋", "添加快捷方式", Color.FromArgb(77, 133, 193), ShowAddShortcutDialog));
             shortcuts.Controls.Add(CreateShortcutCard("☆", "收藏夹", Color.FromArgb(117, 105, 181), ShowBookmarksDialog));
             shortcuts.Controls.Add(CreateShortcutCard("↓", "下载", Color.FromArgb(74, 145, 137), ShowDownloadsDialog));
+            shortcuts.Controls.Add(CreateShortcutCard("▧", "更换壁纸", Color.FromArgb(132, 117, 172), ShowHomeWallpaperMenu));
             layout.Controls.Add(shortcuts, 0, 3);
 
             panel.Controls.Add(layout);
@@ -1738,6 +1753,7 @@ namespace ChenmuBrowser
             core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             core.WebResourceRequested += Core_WebResourceRequested;
             core.DownloadStarting += Core_DownloadStarting;
+            core.PermissionRequested += Core_PermissionRequested;
             core.NavigationStarting += Core_NavigationStarting;
             core.SourceChanged += delegate
             {
@@ -1771,6 +1787,33 @@ namespace ChenmuBrowser
                 if (IsActiveCore(core))
                     _statusLabel.Text = "网页内核遇到问题，可尝试刷新页面。";
             };
+        }
+
+        private void Core_PermissionRequested(object sender, CoreWebView2PermissionRequestedEventArgs e)
+        {
+            SitePermissionKind permission;
+            switch (e.PermissionKind)
+            {
+                case CoreWebView2PermissionKind.Camera:
+                    permission = SitePermissionKind.Camera;
+                    break;
+                case CoreWebView2PermissionKind.Microphone:
+                    permission = SitePermissionKind.Microphone;
+                    break;
+                case CoreWebView2PermissionKind.Geolocation:
+                    permission = SitePermissionKind.Geolocation;
+                    break;
+                case CoreWebView2PermissionKind.Notifications:
+                    permission = SitePermissionKind.Notifications;
+                    break;
+                default:
+                    return;
+            }
+
+            bool allowed = SitePermissionStorage.IsAllowed(_sitePermissionRules, e.Uri, permission);
+            e.State = allowed ? CoreWebView2PermissionState.Allow : CoreWebView2PermissionState.Deny;
+            e.SavesInProfile = false;
+            e.Handled = true;
         }
 
         private bool IsActiveCore(CoreWebView2 core)
@@ -1813,8 +1856,22 @@ namespace ChenmuBrowser
                 e.ResultFilePath = resultPath;
 
                 var ownerTab = _tabs.FirstOrDefault(tab => tab.WebView != null && tab.WebView.CoreWebView2 == core);
-                var entry = new DownloadEntry { Operation = e.DownloadOperation, FilePath = resultPath, Owner = ownerTab };
+                var entry = new DownloadEntry
+                {
+                    Operation = e.DownloadOperation,
+                    FilePath = resultPath,
+                    Owner = ownerTab,
+                    SavedRecord = new DownloadHistoryRecord
+                    {
+                        Id = Guid.NewGuid().ToString("N"),
+                        StartedUtc = DateTime.UtcNow,
+                        FilePath = resultPath,
+                        FileName = Path.GetFileName(resultPath),
+                        Status = DownloadRecordStatus.InProgress
+                    }
+                };
                 _downloads.Insert(0, entry);
+                PersistDownloadHistory();
                 // Keep WebView2's built-in download UI visible; the browser list below tracks the same operation.
                 e.Handled = false;
                 if (ownerTab == _activeTab)
@@ -1829,6 +1886,8 @@ namespace ChenmuBrowser
                         {
                             if (IsDisposed || Disposing)
                                 return;
+                            if (entry.Operation.State != CoreWebView2DownloadState.InProgress)
+                                PersistDownloadHistory();
                             if (entry.Owner != _activeTab)
                                 return;
                             if (entry.Operation.State == CoreWebView2DownloadState.Completed)
@@ -2358,6 +2417,7 @@ namespace ChenmuBrowser
             };
             var closeButton = new Button { Text = "关闭", Width = 78, Height = 30, DialogResult = DialogResult.Cancel };
             var clearButton = new Button { Text = "清理记录", Width = 90, Height = 30 };
+            _toolTip.SetToolTip(clearButton, "只删除下载记录，不会删除下载文件。");
             var folderButton = new Button { Text = "打开文件夹", Width = 104, Height = 30, Enabled = false };
             var cancelButton = new Button { Text = "取消下载", Width = 90, Height = 30, Enabled = false };
             var openButton = new Button { Text = "打开文件", Width = 84, Height = 30, Enabled = false };
@@ -2383,7 +2443,7 @@ namespace ChenmuBrowser
             cancelButton.Click += delegate
             {
                 var entry = GetSelectedDownload(list);
-                if (entry == null || entry.Operation.State != CoreWebView2DownloadState.InProgress)
+                if (entry == null || entry.Operation == null || entry.Operation.State != CoreWebView2DownloadState.InProgress)
                     return;
                 try { entry.Operation.Cancel(); }
                 catch (Exception ex) { MessageBox.Show(dialog, "无法取消下载：" + ex.Message, "下载管理", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
@@ -2391,7 +2451,12 @@ namespace ChenmuBrowser
             };
             clearButton.Click += delegate
             {
-                _downloads.RemoveAll(entry => entry.Operation.State != CoreWebView2DownloadState.InProgress);
+                if (MessageBox.Show(dialog, "清理此列表中的下载记录？此操作不会删除任何已下载文件。", "清理下载记录",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes)
+                    return;
+                _downloads.RemoveAll(entry => entry.Operation == null ||
+                    entry.Operation.State != CoreWebView2DownloadState.InProgress);
+                PersistDownloadHistory();
                 refresh();
             };
 
@@ -2437,11 +2502,16 @@ namespace ChenmuBrowser
             Button cancelButton, Button clearButton)
         {
             var entry = GetSelectedDownload(list);
-            var inProgress = entry != null && entry.Operation.State == CoreWebView2DownloadState.InProgress;
-            openButton.Enabled = entry != null && entry.Operation.State == CoreWebView2DownloadState.Completed && File.Exists(entry.FilePath);
+            var inProgress = entry != null && entry.Operation != null &&
+                entry.Operation.State == CoreWebView2DownloadState.InProgress;
+            var completed = entry != null && (entry.Operation != null
+                ? entry.Operation.State == CoreWebView2DownloadState.Completed
+                : entry.SavedRecord != null && entry.SavedRecord.Status == DownloadRecordStatus.Completed);
+            openButton.Enabled = completed && File.Exists(entry.FilePath);
             folderButton.Enabled = entry != null && Directory.Exists(Path.GetDirectoryName(entry.FilePath));
             cancelButton.Enabled = inProgress;
-            clearButton.Enabled = _downloads.Any(item => item.Operation.State != CoreWebView2DownloadState.InProgress);
+            clearButton.Enabled = _downloads.Any(item => item.Operation == null ||
+                item.Operation.State != CoreWebView2DownloadState.InProgress);
         }
 
         private static DownloadEntry GetSelectedDownload(ListView list)
@@ -2451,8 +2521,19 @@ namespace ChenmuBrowser
 
         private static string GetDownloadStatusText(DownloadEntry entry)
         {
-            if (entry == null || entry.Operation == null)
+            if (entry == null)
                 return "未知";
+            if (entry.Operation == null)
+            {
+                var status = entry.SavedRecord == null ? DownloadRecordStatus.Interrupted : entry.SavedRecord.Status;
+                switch (status)
+                {
+                    case DownloadRecordStatus.InProgress: return "下载中断";
+                    case DownloadRecordStatus.Completed: return "已完成";
+                    case DownloadRecordStatus.Canceled: return "已取消";
+                    default: return "已中断";
+                }
+            }
             if (entry.Operation.State == CoreWebView2DownloadState.InProgress)
                 return "下载中";
             if (entry.Operation.State == CoreWebView2DownloadState.Completed)
@@ -2464,6 +2545,23 @@ namespace ChenmuBrowser
 
         private static string GetDownloadProgressText(DownloadEntry entry)
         {
+            if (entry == null)
+                return String.Empty;
+            if (entry.Operation == null)
+            {
+                var record = entry.SavedRecord;
+                if (record == null)
+                    return String.Empty;
+                var savedReceived = (ulong)Math.Max(0L, record.BytesReceived);
+                if (record.TotalBytes.HasValue && record.TotalBytes.Value > 0)
+                {
+                    var savedTotal = (ulong)record.TotalBytes.Value;
+                    var savedPercentage = (int)Math.Min(100.0, savedReceived * 100.0 / savedTotal);
+                    return FormatDownloadSize(savedReceived) + " / " + FormatDownloadSize(savedTotal) + "  " +
+                        savedPercentage.ToString(CultureInfo.InvariantCulture) + "%";
+                }
+                return FormatDownloadSize(savedReceived);
+            }
             var received = (ulong)Math.Max(0L, entry.Operation.BytesReceived);
             var total = entry.Operation.TotalBytesToReceive.GetValueOrDefault();
             if (total > 0)
@@ -2490,7 +2588,10 @@ namespace ChenmuBrowser
         private void OpenSelectedDownload(ListView list)
         {
             var entry = GetSelectedDownload(list);
-            if (entry == null || entry.Operation.State != CoreWebView2DownloadState.Completed || !File.Exists(entry.FilePath))
+            var completed = entry != null && (entry.Operation != null
+                ? entry.Operation.State == CoreWebView2DownloadState.Completed
+                : entry.SavedRecord != null && entry.SavedRecord.Status == DownloadRecordStatus.Completed);
+            if (!completed || !File.Exists(entry.FilePath))
                 return;
             try
             {
@@ -2841,6 +2942,14 @@ namespace ChenmuBrowser
                             _historyRetentionDays = days;
                         continue;
                     }
+                    if (parts[0] == "downloadHistoryRetentionDays")
+                    {
+                        int days;
+                        if (Int32.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out days) &&
+                            (days == 0 || days == 7 || days == 30 || days == 90 || days == 365))
+                            _downloadHistoryRetentionDays = days;
+                        continue;
+                    }
                     if (parts[0] == "lastUpdateCheckUtc")
                     {
                         DateTime timestamp;
@@ -2869,6 +2978,8 @@ namespace ChenmuBrowser
                         _blockTrackers = value;
                     else if (parts[0] == "restorePreviousSession")
                         _restorePreviousSession = value;
+                    else if (parts[0] == "restoreReaderPosition")
+                        _restoreReaderPosition = value;
                     else if (parts[0] == "dataSaver")
                         _dataSaver = value;
                     else if (parts[0] == "pageAnimations")
@@ -2886,10 +2997,11 @@ namespace ChenmuBrowser
                 var lastUpdateCheck = _lastUpdateCheckUtc == DateTime.MinValue
                     ? String.Empty
                     : _lastUpdateCheckUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
-                File.WriteAllLines(SettingsPath, new[]
+                AtomicTextFile.WriteAllLines(SettingsPath, new[]
                 {
                     "blockTrackers=" + _blockTrackers,
                     "restorePreviousSession=" + _restorePreviousSession,
+                    "restoreReaderPosition=" + _restoreReaderPosition,
                     "dataSaver=" + _dataSaver,
                     "allowedHosts=" + String.Join(";", _allowedHosts
                         .OrderBy(host => host, StringComparer.OrdinalIgnoreCase)
@@ -2897,6 +3009,7 @@ namespace ChenmuBrowser
                     "pageAnimations=" + _pageAnimationsEnabled,
                     "searchEngine=" + _searchEngine,
                     "historyRetentionDays=" + _historyRetentionDays.ToString(CultureInfo.InvariantCulture),
+                    "downloadHistoryRetentionDays=" + _downloadHistoryRetentionDays.ToString(CultureInfo.InvariantCulture),
                     "lastUpdateCheckUtc=" + lastUpdateCheck
                 });
             }
@@ -3025,13 +3138,7 @@ namespace ChenmuBrowser
                     activeIndex = savedTabs.Count - 1;
                 var lines = new List<string> { "activeIndex=" + activeIndex.ToString(CultureInfo.InvariantCulture) };
                 lines.AddRange(savedTabs.Select(item => "url=" + Uri.EscapeDataString(item.Value)));
-                Directory.CreateDirectory(_dataRoot);
-                var temporaryPath = SessionPath + ".tmp";
-                File.WriteAllLines(temporaryPath, lines, new System.Text.UTF8Encoding(false));
-                if (File.Exists(SessionPath))
-                    File.Replace(temporaryPath, SessionPath, null);
-                else
-                    File.Move(temporaryPath, SessionPath);
+                AtomicTextFile.WriteAllLines(SessionPath, lines);
             }
             catch (Exception ex)
             {
@@ -3077,15 +3184,9 @@ namespace ChenmuBrowser
         {
             try
             {
-                Directory.CreateDirectory(_dataRoot);
-                var temporaryPath = BookmarksPath + ".tmp";
-                File.WriteAllLines(temporaryPath, bookmarks.Select(b =>
+                AtomicTextFile.WriteAllLines(BookmarksPath, bookmarks.Select(b =>
                     Uri.EscapeDataString(b.Title ?? String.Empty) + "\t" + b.Url + "\t" +
                     Uri.EscapeDataString(b.FolderPath ?? String.Empty)));
-                if (File.Exists(BookmarksPath))
-                    File.Replace(temporaryPath, BookmarksPath, null);
-                else
-                    File.Move(temporaryPath, BookmarksPath);
                 return true;
             }
             catch (Exception ex)
@@ -3113,6 +3214,7 @@ namespace ChenmuBrowser
             public CoreWebView2DownloadOperation Operation { get; set; }
             public string FilePath { get; set; }
             public BrowserTab Owner { get; set; }
+            public DownloadHistoryRecord SavedRecord { get; set; }
         }
 
         private sealed class BookmarkItem

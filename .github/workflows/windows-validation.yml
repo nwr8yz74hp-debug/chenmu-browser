@@ -1,0 +1,35 @@
+name: Windows validation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run cross-platform logic tests
+        shell: pwsh
+        run: dotnet run --project tests/BrowserLogicTests.csproj -c Release
+
+      - name: Build application and Windows WebView2 smoke tests
+        shell: pwsh
+        run: dotnet build tests/WindowsWebView2SmokeTests.csproj -c Release
+
+      - name: Run Windows WebView2 security smoke tests
+        shell: pwsh
+        run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
