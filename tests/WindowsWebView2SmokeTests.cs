@@ -44,6 +44,10 @@ internal static class WindowsWebView2SmokeTests
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
+
     [STAThread]
     private static int Main()
     {
@@ -65,13 +69,21 @@ internal static class WindowsWebView2SmokeTests
                     {
                         try
                         {
+                            Console.WriteLine("START: wallpaper menu lifecycle.");
                             TestWallpaperMenuLifecycle(browser);
+                            Console.WriteLine("START: navigation history.");
                             await TestV15NavigationHistoryAsync(browser);
+                            Console.WriteLine("START: find, zoom and recently closed tabs.");
                             await TestV15FindZoomAndRecentlyClosedAsync(browser);
+                            Console.WriteLine("START: local extensions.");
                             await TestV15ExtensionsAsync(browser, root);
+                            Console.WriteLine("START: PDF/PNG save dialogs.");
                             await TestV15PageExportsAndCancelAsync(browser, root);
+                            Console.WriteLine("START: default-deny site permissions.");
                             await TestDefaultDenyPermissionsAsync(browser, server);
+                            Console.WriteLine("START: Reader file boundary.");
                             await TestReaderSubresourceBoundaryAsync(root);
+                            Console.WriteLine("START: background resume regression.");
                             await TestBackgroundResumeAsync(browser);
                             await CaptureRunningBrowserScreenshotAsync(browser);
                             Console.WriteLine("PASS: v1.5 navigation, find, zoom, extensions, recent tabs, exports, permission, Reader boundary and background-resume regressions.");
@@ -93,7 +105,7 @@ internal static class WindowsWebView2SmokeTests
             if (_failure != null)
                 throw _failure;
             if (!_updateNoticeValidated)
-                throw new InvalidOperationException("The v1.4.4 update-complete dialog was not visually validated.");
+                throw new InvalidOperationException("The v1.5.0 update-complete dialog was not visually validated.");
             if (!_wallpaperMenuDisposedOnBrowserClose)
                 throw new InvalidOperationException("The wallpaper ContextMenuStrip was not disposed with BrowserForm.");
             return 0;
@@ -131,9 +143,9 @@ internal static class WindowsWebView2SmokeTests
                     };
                     EnumChildWindows(dialog, callback, IntPtr.Zero);
                     var message = String.Join(Environment.NewLine, text);
-                if (!message.Contains("已更新至 v1.5.0") ||
+                    if (!message.Contains("已更新至 v1.5.0") ||
                         !message.Contains("修复前进/返回历史导航") ||
-                        !message.Contains("截图当前可见 WebView 网页") ||
+                        !message.Contains("将当前可见 WebView 网页截图为 PNG") ||
                         message.Contains("更新完成弹窗误显示过往版本更新内容") ||
                         message.Contains("切回前台时多余的窗口标题栏重算") ||
                         message.Contains("ContextMenuStrip 已释放异常"))
@@ -149,7 +161,8 @@ internal static class WindowsWebView2SmokeTests
                 }
                 finally
                 {
-                    SendMessage(dialog, 0x0111, new IntPtr(1), IntPtr.Zero);
+                    if (!PostMessage(dialog, 0x0111, new IntPtr(1), IntPtr.Zero))
+                        Console.Error.WriteLine("Could not post OK to the update notice dialog.");
                 }
                 return;
             }

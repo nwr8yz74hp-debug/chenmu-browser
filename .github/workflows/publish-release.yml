@@ -50,6 +50,7 @@ jobs:
         id: webview2_smoke
         continue-on-error: ${{ github.ref == 'refs/tags/v1.4.0' || github.ref == 'refs/tags/v1.4.1' }}
         shell: pwsh
+        timeout-minutes: 8
         run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
 
       - name: Report non-passing WebView2 security smoke test
