@@ -35,6 +35,10 @@ internal static class WindowsWebView2SmokeTests
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr handle);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -165,8 +169,20 @@ internal static class WindowsWebView2SmokeTests
                 finally
                 {
                     var okButton = GetDlgItem(dialog, 1);
-                    if (okButton == IntPtr.Zero || !PostMessage(okButton, 0x00F5, IntPtr.Zero, IntPtr.Zero))
-                        Console.Error.WriteLine("Could not click OK on the update notice dialog.");
+                    if (okButton == IntPtr.Zero)
+                        Console.Error.WriteLine("Update notice OK button was not found; dismissing the validated dialog directly.");
+                    else
+                    {
+                        SendMessage(okButton, 0x00F5, IntPtr.Zero, IntPtr.Zero);
+                        if (!IsWindow(dialog))
+                            Console.WriteLine("PASS: synchronously clicked the update notice OK button.");
+                    }
+                    if (IsWindow(dialog))
+                        SendMessage(dialog, 0x0111, new IntPtr(1), IntPtr.Zero);
+                    if (IsWindow(dialog))
+                        SendMessage(dialog, 0x0010, IntPtr.Zero, IntPtr.Zero);
+                    if (IsWindow(dialog))
+                        Console.Error.WriteLine("Update notice dialog remained open after BM_CLICK, IDOK, and WM_CLOSE.");
                 }
                 return;
             }
@@ -240,9 +256,9 @@ internal static class WindowsWebView2SmokeTests
             await NavigateHistoryAndWaitAsync(browser, firstCore, "GoBack", a);
             await NavigateHistoryAndWaitAsync(browser, firstCore, "GoForward", b);
             await NavigateHistoryAndWaitAsync(browser, firstCore, "GoForward", c);
-            FocusWebViewAndSendKeys(browser, "%{LEFT}");
+            await FocusPageInputAndSendKeysAsync(browser, firstCore, "%{LEFT}");
             await WaitUntilAsync(() => String.Equals(firstCore.Source, new Uri(b).AbsoluteUri, StringComparison.OrdinalIgnoreCase), 12000);
-            FocusWebViewAndSendKeys(browser, "%{RIGHT}");
+            await FocusPageInputAndSendKeysAsync(browser, firstCore, "%{RIGHT}");
             await WaitUntilAsync(() => String.Equals(firstCore.Source, new Uri(c).AbsoluteUri, StringComparison.OrdinalIgnoreCase), 12000);
             Console.WriteLine("PASS: HTTP A→B→C history buttons and Alt+Left/Right keyboard navigation preserve history.");
 
@@ -282,7 +298,7 @@ internal static class WindowsWebView2SmokeTests
             var findTextField = typeof(BrowserForm).GetField("_findTextBox", BindingFlags.Instance | BindingFlags.NonPublic);
             if (findTextField == null)
                 throw new InvalidOperationException("The v1.5 find bar was not found.");
-            FocusWebViewAndSendKeys(browser, "^f");
+            await FocusPageInputAndSendKeysAsync(browser, core, "^f");
             await WaitUntilAsync(() => findTextField.GetValue(browser) is TextBox, 5000);
             var findText = findTextField.GetValue(browser) as TextBox;
             if (findText == null || findText.FindForm() == null || !findText.FindForm().Visible)
@@ -304,10 +320,15 @@ internal static class WindowsWebView2SmokeTests
             setZoom.Invoke(browser, new object[] { 1.35 });
             if (Math.Abs(((WebView2)GetWebViewForTab(firstTab)).ZoomFactor - 1.35) > 0.001)
                 throw new InvalidOperationException("The active tab did not apply its 135% zoom.");
-            FocusWebViewAndSendKeys(browser, "^{ADD}");
+            await FocusPageInputAndSendKeysAsync(browser, GetCoreForTab(firstTab), "^{ADD}");
             await WaitUntilAsync(() => Math.Abs(((WebView2)GetWebViewForTab(firstTab)).ZoomFactor - 1.45) < 0.001, 5000);
             if (Math.Abs(((WebView2)GetWebViewForTab(firstTab)).ZoomFactor - 1.45) > 0.001)
                 throw new InvalidOperationException("Ctrl+Plus did not adjust zoom in the WebView-focused page.");
+            await FocusPageInputAndSendKeysAsync(browser, GetCoreForTab(firstTab), "^{SUBTRACT}");
+            await WaitUntilAsync(() => Math.Abs(((WebView2)GetWebViewForTab(firstTab)).ZoomFactor - 1.35) < 0.001, 5000);
+            await FocusPageInputAndSendKeysAsync(browser, GetCoreForTab(firstTab), "^0");
+            await WaitUntilAsync(() => Math.Abs(((WebView2)GetWebViewForTab(firstTab)).ZoomFactor - 1.0) < 0.001, 5000);
+            setZoom.Invoke(browser, new object[] { 1.35 });
             createTab.Invoke(browser, null);
             await EnsureBrowserWebViewAsync(browser);
             var secondTab = GetActiveTab(browser);
@@ -362,7 +383,7 @@ internal static class WindowsWebView2SmokeTests
             if (!String.Equals((string)snapshot.GetType().GetProperty("Url").GetValue(snapshot, null), new Uri(closedUrl).AbsoluteUri, StringComparison.OrdinalIgnoreCase) ||
                 Math.Abs((double)snapshot.GetType().GetProperty("ZoomFactor").GetValue(snapshot, null) - 1.3) > 0.001)
                 throw new InvalidOperationException("The recent-tab snapshot did not preserve URL and zoom.");
-            FocusWebViewAndSendKeys(browser, "^+t");
+            await FocusPageInputAndSendKeysAsync(browser, GetCoreForTab(GetActiveTab(browser)), "^+t");
             await WaitUntilAsync(() =>
             {
                 var active = GetActiveTab(browser);
@@ -392,6 +413,14 @@ internal static class WindowsWebView2SmokeTests
             throw new InvalidOperationException("The active WebView did not retain keyboard focus before sending " + sequence + ".");
         SendKeys.SendWait(sequence);
         Application.DoEvents();
+    }
+
+    private static async Task FocusPageInputAndSendKeysAsync(BrowserForm browser, CoreWebView2 core, string sequence)
+    {
+        string focusedElement = await core.ExecuteScriptAsync("document.getElementById('editor').focus(); document.activeElement.id");
+        if (!String.Equals(focusedElement, "\"editor\"", StringComparison.Ordinal))
+            throw new InvalidOperationException("The test page input did not receive DOM focus before sending " + sequence + ": " + focusedElement);
+        FocusWebViewAndSendKeys(browser, sequence);
     }
 
     private static async Task TestV15ExtensionsAsync(BrowserForm browser, string root)
@@ -1152,7 +1181,7 @@ internal static class WindowsWebView2SmokeTests
                         await stream.ReadAsync(request, 0, request.Length);
                         byte[] body = Encoding.UTF8.GetBytes(
                             "<!doctype html><html><head><meta charset=\"utf-8\"><title>history-smoke</title></head>" +
-                            "<body><h1>History smoke page</h1><p>needle appears here</p><p>needle appears again</p></body></html>");
+                            "<body><h1>History smoke page</h1><input id=\"editor\"><p>needle appears here</p><p>needle appears again</p></body></html>");
                         byte[] header = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n" +
                             "Content-Length: " + body.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                             "\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n");
