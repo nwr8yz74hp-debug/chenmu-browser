@@ -76,6 +76,9 @@ internal static class WindowsWebView2SmokeTests
         if (webView == null || webView.CoreWebView2 == null)
             throw new InvalidOperationException("The browser WebView2 control did not initialize.");
         var core = webView.CoreWebView2;
+        await WaitForPageReadyAsync(core, server.Url);
+        string pageCapabilities = await core.ExecuteScriptAsync("JSON.stringify({origin:location.origin,secure:window.isSecureContext,media:!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia),geolocation:!!navigator.geolocation,notifications:!!window.Notification})");
+        Console.WriteLine("Permission test page: " + pageCapabilities);
         var seen = new Dictionary<CoreWebView2PermissionKind, ObservedPermission>();
         core.PermissionRequested += delegate(object sender, CoreWebView2PermissionRequestedEventArgs args)
         {
@@ -106,6 +109,9 @@ internal static class WindowsWebView2SmokeTests
                     break;
             await Task.Delay(200);
         }
+
+        if (seen.Count < 4)
+            Console.Error.WriteLine("Permission event diagnostics: " + pageCapabilities);
 
         lock (seen)
         {
@@ -254,6 +260,30 @@ internal static class WindowsWebView2SmokeTests
             await Task.Delay(100);
         }
         throw new TimeoutException("Timed out waiting for WebView2 initialization.");
+    }
+
+    private static async Task WaitForPageReadyAsync(CoreWebView2 core, string expectedUrl)
+    {
+        Uri expected;
+        if (!Uri.TryCreate(expectedUrl, UriKind.Absolute, out expected))
+            throw new InvalidOperationException("The permission test server URL is invalid.");
+        DateTime deadline = DateTime.UtcNow.AddSeconds(20);
+        while (DateTime.UtcNow < deadline)
+        {
+            Uri current;
+            if (Uri.TryCreate(core.Source, UriKind.Absolute, out current) &&
+                String.Equals(current.AbsoluteUri, expected.AbsoluteUri, StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    if (String.Equals(await core.ExecuteScriptAsync("document.readyState === 'complete'"), "true", StringComparison.Ordinal))
+                        return;
+                }
+                catch { }
+            }
+            await Task.Delay(100);
+        }
+        throw new TimeoutException("Timed out waiting for the permission test page to finish loading.");
     }
 
     private static string ToFileUri(string path)
