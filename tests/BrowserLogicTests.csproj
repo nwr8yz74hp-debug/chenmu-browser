@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Remove="WindowsWebView2SmokeTests.cs" />
     <Compile Remove="HomeVisualSmokeTests.cs" />
+    <Compile Include="../DebouncedWorkQueue.cs" Link="DebouncedWorkQueue.cs" />
     <Compile Include="../BookmarkHtmlTransfer.cs" Link="BookmarkHtmlTransfer.cs" />
     <Compile Include="../DomainRuleMatcher.cs" Link="DomainRuleMatcher.cs" />
     <Compile Include="../AtomicTextFile.cs" Link="AtomicTextFile.cs" />
