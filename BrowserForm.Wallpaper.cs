@@ -11,6 +11,7 @@ namespace ChenmuBrowser
         private const long MaximumWallpaperInputBytes = 30L * 1024L * 1024L;
         private const long MaximumWallpaperPixels = 32000000L;
         private const int MaximumWallpaperDimension = 2560;
+        private ContextMenuStrip _homeWallpaperMenu;
 
         private string HomeWallpaperPath { get { return Path.Combine(_dataRoot, "home-wallpaper.jpg"); } }
 
@@ -58,11 +59,24 @@ namespace ChenmuBrowser
 
         private void ShowHomeWallpaperMenu()
         {
-            var menu = new ContextMenuStrip();
-            menu.Items.Add("从本机选择图片…", null, delegate { ChooseHomeWallpaper(); });
-            menu.Items.Add("恢复默认渐变背景", null, delegate { RestoreDefaultHomeWallpaper(); });
-            menu.Closed += delegate { menu.Dispose(); };
-            menu.Show(Cursor.Position);
+            if (_homeWallpaperMenu == null || _homeWallpaperMenu.IsDisposed)
+            {
+                _homeWallpaperMenu = new ContextMenuStrip();
+                _homeWallpaperMenu.Items.Add("从本机选择图片…", null, delegate { ChooseHomeWallpaper(); });
+                _homeWallpaperMenu.Items.Add("恢复默认渐变背景", null, delegate { RestoreDefaultHomeWallpaper(); });
+                FormClosed += DisposeHomeWallpaperMenu;
+            }
+
+            if (!_homeWallpaperMenu.Visible)
+                _homeWallpaperMenu.Show(Cursor.Position);
+        }
+
+        private void DisposeHomeWallpaperMenu(object sender, FormClosedEventArgs e)
+        {
+            var menu = _homeWallpaperMenu;
+            _homeWallpaperMenu = null;
+            if (menu != null && !menu.IsDisposed)
+                menu.Dispose();
         }
 
         private void ChooseHomeWallpaper()

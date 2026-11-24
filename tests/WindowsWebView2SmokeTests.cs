@@ -19,6 +19,7 @@ using Microsoft.Web.WebView2.WinForms;
 internal static class WindowsWebView2SmokeTests
 {
     private static Exception _failure;
+    private static bool _wallpaperMenuDisposedOnBrowserClose;
 
     [STAThread]
     private static int Main()
@@ -36,6 +37,7 @@ internal static class WindowsWebView2SmokeTests
                 {
                     try
                     {
+                        TestWallpaperMenuLifecycle(browser);
                         await TestDefaultDenyPermissionsAsync(browser, server);
                         await TestReaderSubresourceBoundaryAsync(root);
                         Console.WriteLine("PASS: WebView2 permission default-deny and Reader HTML/SVG subresource boundary.");
@@ -55,6 +57,8 @@ internal static class WindowsWebView2SmokeTests
             }
             if (_failure != null)
                 throw _failure;
+            if (!_wallpaperMenuDisposedOnBrowserClose)
+                throw new InvalidOperationException("The wallpaper ContextMenuStrip was not disposed with BrowserForm.");
             return 0;
         }
         catch (Exception ex)
@@ -66,6 +70,41 @@ internal static class WindowsWebView2SmokeTests
         {
             TryDeleteDirectory(root);
         }
+    }
+
+    private static void TestWallpaperMenuLifecycle(BrowserForm browser)
+    {
+        var showMenu = typeof(BrowserForm).GetMethod("ShowHomeWallpaperMenu", BindingFlags.Instance | BindingFlags.NonPublic);
+        var menuField = typeof(BrowserForm).GetField("_homeWallpaperMenu", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (showMenu == null || menuField == null)
+            throw new InvalidOperationException("The wallpaper menu implementation was not found.");
+
+        showMenu.Invoke(browser, null);
+        var menu = menuField.GetValue(browser) as ContextMenuStrip;
+        if (menu == null || menu.IsDisposed || menu.Items.Count != 2)
+            throw new InvalidOperationException("The wallpaper menu was not created correctly.");
+
+        browser.FormClosed += delegate { _wallpaperMenuDisposedOnBrowserClose = menu.IsDisposed; };
+        menu.Close(ToolStripDropDownCloseReason.CloseCalled);
+        Application.DoEvents();
+        if (menu.IsDisposed)
+            throw new InvalidOperationException("The wallpaper menu was disposed while handling its Closed event.");
+
+        showMenu.Invoke(browser, null);
+        if (!Object.ReferenceEquals(menu, menuField.GetValue(browser)))
+            throw new InvalidOperationException("The wallpaper menu was not reused after closing.");
+        menu.Items[1].PerformClick();
+        Application.DoEvents();
+        if (menu.IsDisposed)
+            throw new InvalidOperationException("Selecting a wallpaper menu item disposed the menu before the event completed.");
+
+        showMenu.Invoke(browser, null);
+        menu.Close(ToolStripDropDownCloseReason.CloseCalled);
+        Application.DoEvents();
+        if (menu.IsDisposed)
+            throw new InvalidOperationException("The wallpaper menu could not be reopened after a menu-item click.");
+
+        Console.WriteLine("PASS: wallpaper ContextMenuStrip remains reusable after closing and is disposed with BrowserForm.");
     }
 
     private static async Task TestDefaultDenyPermissionsAsync(BrowserForm browser, LocalTestServer server)

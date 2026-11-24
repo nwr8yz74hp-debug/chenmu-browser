@@ -1,3 +1,7 @@
+# CHENMU Browser v1.4.1 更新说明
+
+- 修复主页“更换壁纸”菜单在关闭/选择菜单项时过早释放，导致再次点击出现 `ContextMenuStrip` 已释放异常的问题；菜单现会在浏览器窗口关闭时统一释放。
+
 # CHENMU Browser v1.4.0 更新说明
 
 - 收紧 CHENMU Reader 的本地文件边界：HTML、SVG 等文档的本地子资源不得越出所选文件目录；Reader 仍禁用脚本并拦截网页网络请求。
