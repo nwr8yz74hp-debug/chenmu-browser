@@ -109,17 +109,14 @@ internal static class WindowsWebView2SmokeTests
 
     private static async Task TestDefaultDenyPermissionsAsync(BrowserForm browser, LocalTestServer server)
     {
-        var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
-        if (navigate == null)
-            throw new InvalidOperationException("BrowserForm.NavigateAsync was not found.");
-        await (Task)navigate.Invoke(browser, new object[] { server.Url });
+        await EnsureBrowserWebViewAsync(browser);
 
         var webViewField = typeof(BrowserForm).GetField("_webView", BindingFlags.Instance | BindingFlags.NonPublic);
         var webView = webViewField == null ? null : webViewField.GetValue(browser) as WebView2;
         if (webView == null || webView.CoreWebView2 == null)
             throw new InvalidOperationException("The browser WebView2 control did not initialize.");
         var core = webView.CoreWebView2;
-        await NavigateAndWaitAsync(core, server.Url);
+        await NavigateAndWaitAsync(browser, core, server.Url);
         string pageCapabilities = await core.ExecuteScriptAsync("JSON.stringify({origin:location.origin,secure:window.isSecureContext,media:!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia),geolocation:!!navigator.geolocation,notifications:!!window.Notification})");
         Console.WriteLine("Permission test page: " + pageCapabilities);
         var seen = new Dictionary<CoreWebView2PermissionKind, ObservedPermission>();
@@ -251,11 +248,20 @@ internal static class WindowsWebView2SmokeTests
     {
         string target = new Uri(Path.GetFullPath(path)).AbsoluteUri;
         var completion = new TaskCompletionSource<bool>();
+        ulong targetNavigationId = 0;
+        string lastNavigation = "none";
+        string lastCompletion = "none";
+        EventHandler<CoreWebView2NavigationStartingEventArgs> startingHandler = delegate(object sender, CoreWebView2NavigationStartingEventArgs args)
+        {
+            lastNavigation = args.Uri + " (id " + args.NavigationId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")";
+            if (String.Equals(args.Uri, target, StringComparison.OrdinalIgnoreCase))
+                targetNavigationId = args.NavigationId;
+        };
         EventHandler<CoreWebView2NavigationCompletedEventArgs> handler = delegate(object sender, CoreWebView2NavigationCompletedEventArgs args)
         {
-            Uri current;
-            if (Uri.TryCreate(core.Source, UriKind.Absolute, out current) &&
-                String.Equals(current.AbsoluteUri, target, StringComparison.OrdinalIgnoreCase))
+            lastCompletion = "id " + args.NavigationId.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ", success=" + args.IsSuccess.ToString() + ", error=" + args.WebErrorStatus.ToString();
+            if (targetNavigationId != 0 && args.NavigationId == targetNavigationId)
             {
                 if (args.IsSuccess)
                     completion.TrySetResult(true);
@@ -263,6 +269,7 @@ internal static class WindowsWebView2SmokeTests
                     completion.TrySetException(new InvalidOperationException("Reader could not load test document " + path + ": " + args.WebErrorStatus));
             }
         };
+        core.NavigationStarting += startingHandler;
         core.NavigationCompleted += handler;
         try
         {
@@ -272,11 +279,17 @@ internal static class WindowsWebView2SmokeTests
             await (Task)method.Invoke(reader, new object[] { path });
             var finished = await Task.WhenAny(completion.Task, Task.Delay(20000));
             if (finished != completion.Task)
-                throw new TimeoutException("Timed out waiting for Reader to navigate to " + path);
+                throw new TimeoutException("Timed out waiting for Reader to navigate to " + path +
+                    ". Current source: " + core.Source + "; last navigation: " + lastNavigation +
+                    "; last completion: " + lastCompletion);
             await completion.Task;
             await Task.Delay(900);
         }
-        finally { core.NavigationCompleted -= handler; }
+        finally
+        {
+            core.NavigationStarting -= startingHandler;
+            core.NavigationCompleted -= handler;
+        }
     }
 
     private static void AssertBlocked(Dictionary<string, int> statuses, string path, string description)
@@ -306,17 +319,43 @@ internal static class WindowsWebView2SmokeTests
         throw new TimeoutException("Timed out waiting for WebView2 initialization.");
     }
 
-    private static async Task NavigateAndWaitAsync(CoreWebView2 core, string targetUrl)
+    private static async Task EnsureBrowserWebViewAsync(BrowserForm browser)
+    {
+        var activeTabField = typeof(BrowserForm).GetField("_activeTab", BindingFlags.Instance | BindingFlags.NonPublic);
+        var ensure = typeof(BrowserForm).GetMethod("EnsureWebViewAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (activeTabField == null || ensure == null)
+            throw new InvalidOperationException("BrowserForm WebView initialization methods were not found.");
+        var activeTab = activeTabField.GetValue(browser);
+        if (activeTab == null)
+            throw new InvalidOperationException("BrowserForm has no active test tab.");
+        await (Task)ensure.Invoke(browser, new[] { activeTab });
+    }
+
+    private static async Task NavigateAndWaitAsync(BrowserForm browser, CoreWebView2 core, string targetUrl)
     {
         Uri expected;
         if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out expected))
             throw new InvalidOperationException("The permission test server URL is invalid.");
         var completion = new TaskCompletionSource<bool>();
+        ulong targetNavigationId = 0;
+        string lastNavigation = "none";
+        string lastCompletion = "none";
+        Console.WriteLine("[PermissionNav] WebView2 runtime: " + core.Environment.BrowserVersionString);
+        EventHandler<CoreWebView2NavigationStartingEventArgs> startingHandler = delegate(object sender, CoreWebView2NavigationStartingEventArgs args)
+        {
+            lastNavigation = args.Uri + " (id " + args.NavigationId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")";
+            Console.WriteLine("[PermissionNav] NavigationStarting: " + lastNavigation + "; redirected=" + args.IsRedirected + "; canceled=" + args.Cancel);
+            Uri requested;
+            if (Uri.TryCreate(args.Uri, UriKind.Absolute, out requested) &&
+                String.Equals(requested.AbsoluteUri, expected.AbsoluteUri, StringComparison.OrdinalIgnoreCase))
+                targetNavigationId = args.NavigationId;
+        };
         EventHandler<CoreWebView2NavigationCompletedEventArgs> handler = delegate(object sender, CoreWebView2NavigationCompletedEventArgs args)
         {
-            Uri current;
-            if (Uri.TryCreate(core.Source, UriKind.Absolute, out current) &&
-                String.Equals(current.AbsoluteUri, expected.AbsoluteUri, StringComparison.OrdinalIgnoreCase))
+            lastCompletion = "id " + args.NavigationId.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ", success=" + args.IsSuccess.ToString() + ", error=" + args.WebErrorStatus.ToString();
+            Console.WriteLine("[PermissionNav] NavigationCompleted: " + lastCompletion + "; source=" + core.Source);
+            if (targetNavigationId != 0 && args.NavigationId == targetNavigationId)
             {
                 if (args.IsSuccess)
                     completion.TrySetResult(true);
@@ -324,16 +363,37 @@ internal static class WindowsWebView2SmokeTests
                     completion.TrySetException(new InvalidOperationException("Permission test page navigation failed: " + args.WebErrorStatus));
             }
         };
+        EventHandler<CoreWebView2ServerCertificateErrorDetectedEventArgs> certificateErrorHandler = delegate(object sender, CoreWebView2ServerCertificateErrorDetectedEventArgs args)
+        {
+            Console.Error.WriteLine("[PermissionNav] Server certificate error: request=" + args.RequestUri + "; status=" + args.ErrorStatus + "; action=" + args.Action);
+        };
+        EventHandler<CoreWebView2SourceChangedEventArgs> sourceChangedHandler = delegate
+        {
+            Console.WriteLine("[PermissionNav] SourceChanged: " + core.Source);
+        };
+        core.NavigationStarting += startingHandler;
         core.NavigationCompleted += handler;
+        core.ServerCertificateErrorDetected += certificateErrorHandler;
+        core.SourceChanged += sourceChangedHandler;
         try
         {
-            core.Navigate(expected.AbsoluteUri);
+            var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (navigate == null)
+                throw new InvalidOperationException("BrowserForm.NavigateAsync was not found.");
+            await (Task)navigate.Invoke(browser, new object[] { expected.AbsoluteUri });
             var finished = await Task.WhenAny(completion.Task, Task.Delay(20000));
             if (finished != completion.Task)
-                throw new TimeoutException("Timed out waiting for the permission test page. Current source: " + core.Source);
+                throw new TimeoutException("Timed out waiting for the permission test page. Current source: " + core.Source +
+                    "; last navigation: " + lastNavigation + "; last completion: " + lastCompletion);
             await completion.Task;
         }
-        finally { core.NavigationCompleted -= handler; }
+        finally
+        {
+            core.NavigationStarting -= startingHandler;
+            core.NavigationCompleted -= handler;
+            core.ServerCertificateErrorDetected -= certificateErrorHandler;
+            core.SourceChanged -= sourceChangedHandler;
+        }
     }
 
     private static string ToFileUri(string path)
@@ -364,7 +424,6 @@ internal static class WindowsWebView2SmokeTests
     {
         private readonly TcpListener _listener;
         private readonly Task _serveTask;
-        private readonly RSA _privateKey;
         private readonly X509Certificate2 _certificate;
         private volatile bool _stopping;
         private readonly byte[] _responseBody = Encoding.UTF8.GetBytes("<!doctype html><html><head><title>permission-test</title></head><body>permission test</body></html>");
@@ -373,54 +432,94 @@ internal static class WindowsWebView2SmokeTests
 
         public LocalTestServer()
         {
-            _privateKey = RSA.Create();
-            _privateKey.KeySize = 2048;
-            var certificateRequest = new CertificateRequest("CN=127.0.0.1", _privateKey,
-                HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            var subjectAlternativeName = new SubjectAlternativeNameBuilder();
-            subjectAlternativeName.AddIpAddress(IPAddress.Loopback);
-            certificateRequest.CertificateExtensions.Add(subjectAlternativeName.Build());
-            certificateRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
-            certificateRequest.CertificateExtensions.Add(new X509KeyUsageExtension(
-                X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
-            _certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+            using (var privateKey = RSA.Create())
+            {
+                privateKey.KeySize = 2048;
+                var certificateRequest = new CertificateRequest("CN=127.0.0.1", privateKey,
+                    HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                var subjectAlternativeName = new SubjectAlternativeNameBuilder();
+                subjectAlternativeName.AddIpAddress(IPAddress.Loopback);
+                certificateRequest.CertificateExtensions.Add(subjectAlternativeName.Build());
+                certificateRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+                certificateRequest.CertificateExtensions.Add(new X509KeyUsageExtension(
+                    X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
+                var serverAuthentication = new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") };
+                certificateRequest.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(serverAuthentication, false));
+                using (var generatedCertificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1)))
+                {
+                    byte[] pfx = generatedCertificate.Export(X509ContentType.Pfx);
+                    try
+                    {
+                        _certificate = new X509Certificate2(pfx, (string)null,
+                            X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable);
+                    }
+                    finally { Array.Clear(pfx, 0, pfx.Length); }
+                }
+            }
+            if (!_certificate.HasPrivateKey)
+                throw new InvalidOperationException("The local HTTPS test certificate has no usable private key.");
 
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
             var endpoint = (IPEndPoint)_listener.LocalEndpoint;
             Url = "https://127.0.0.1:" + endpoint.Port.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/";
+            Console.WriteLine("[LocalTestServer] Listening at " + Url + "; certificate=" + _certificate.Subject +
+                "; thumbprint=" + _certificate.Thumbprint + "; privateKey=" + _certificate.HasPrivateKey +
+                "; valid=" + _certificate.NotBefore.ToUniversalTime().ToString("O") +
+                ".." + _certificate.NotAfter.ToUniversalTime().ToString("O"));
             _serveTask = Task.Run((Func<Task>)ServeAsync);
         }
 
         private async Task ServeAsync()
         {
+            Console.WriteLine("[LocalTestServer] Accept loop started.");
             while (!_stopping)
             {
                 TcpClient client = null;
+                string stage = "accept";
                 try
                 {
                     client = await _listener.AcceptTcpClientAsync();
+                    Console.WriteLine("[LocalTestServer] Accepted " + client.Client.RemoteEndPoint + "; starting TLS handshake.");
                     using (client)
                     using (var stream = new SslStream(client.GetStream(), false))
                     {
+                        stage = "TLS handshake";
                         await stream.AuthenticateAsServerAsync(_certificate, false, SslProtocols.Tls12, false);
+                        Console.WriteLine("[LocalTestServer] TLS handshake completed: " + stream.SslProtocol + "; reading HTTP request.");
+                        stage = "HTTP request read";
                         var request = new byte[2048];
-                        try { await stream.ReadAsync(request, 0, request.Length); }
-                        catch { }
+                        int requestLength = await stream.ReadAsync(request, 0, request.Length);
+                        string requestLine = requestLength == 0 ? "<connection closed without request>" :
+                            Encoding.ASCII.GetString(request, 0, requestLength).Split(new[] { "\r\n" }, StringSplitOptions.None)[0];
+                        Console.WriteLine("[LocalTestServer] Received " + requestLength.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                            " request bytes: " + requestLine);
                         string header = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n" +
                             "Content-Length: " + _responseBody.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                             "\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n";
                         var headerBytes = Encoding.ASCII.GetBytes(header);
+                        stage = "HTTP response write";
                         await stream.WriteAsync(headerBytes, 0, headerBytes.Length);
                         await stream.WriteAsync(_responseBody, 0, _responseBody.Length);
+                        Console.WriteLine("[LocalTestServer] Sent HTTP 200 response.");
                     }
                 }
-                catch (ObjectDisposedException) { break; }
-                catch (SocketException) { if (_stopping) break; }
-                catch (AuthenticationException) { }
-                catch (IOException) { }
+                catch (ObjectDisposedException ex)
+                {
+                    if (!_stopping) Console.Error.WriteLine("[LocalTestServer] " + stage + " failed: " + ex);
+                    break;
+                }
+                catch (SocketException ex)
+                {
+                    if (!_stopping) Console.Error.WriteLine("[LocalTestServer] " + stage + " failed: " + ex);
+                    if (_stopping) break;
+                }
+                catch (AuthenticationException ex) { Console.Error.WriteLine("[LocalTestServer] " + stage + " failed: " + ex); }
+                catch (IOException ex) { Console.Error.WriteLine("[LocalTestServer] " + stage + " failed: " + ex); }
+                catch (Exception ex) { Console.Error.WriteLine("[LocalTestServer] " + stage + " failed: " + ex); }
                 finally { if (client != null) client.Close(); }
             }
+            Console.WriteLine("[LocalTestServer] Accept loop stopped.");
         }
 
         public void Dispose()
@@ -431,7 +530,6 @@ internal static class WindowsWebView2SmokeTests
             try { _serveTask.Wait(1000); }
             catch { }
             _certificate.Dispose();
-            _privateKey.Dispose();
         }
     }
 }
