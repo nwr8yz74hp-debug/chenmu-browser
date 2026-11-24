@@ -424,7 +424,6 @@ internal static class WindowsWebView2SmokeTests
     {
         private readonly TcpListener _listener;
         private readonly Task _serveTask;
-        private readonly RSA _privateKey;
         private readonly X509Certificate2 _certificate;
         private volatile bool _stopping;
         private readonly byte[] _responseBody = Encoding.UTF8.GetBytes("<!doctype html><html><head><title>permission-test</title></head><body>permission test</body></html>");
@@ -433,24 +432,40 @@ internal static class WindowsWebView2SmokeTests
 
         public LocalTestServer()
         {
-            _privateKey = RSA.Create();
-            _privateKey.KeySize = 2048;
-            var certificateRequest = new CertificateRequest("CN=127.0.0.1", _privateKey,
-                HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            var subjectAlternativeName = new SubjectAlternativeNameBuilder();
-            subjectAlternativeName.AddIpAddress(IPAddress.Loopback);
-            certificateRequest.CertificateExtensions.Add(subjectAlternativeName.Build());
-            certificateRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
-            certificateRequest.CertificateExtensions.Add(new X509KeyUsageExtension(
-                X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
-            _certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+            using (var privateKey = RSA.Create())
+            {
+                privateKey.KeySize = 2048;
+                var certificateRequest = new CertificateRequest("CN=127.0.0.1", privateKey,
+                    HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                var subjectAlternativeName = new SubjectAlternativeNameBuilder();
+                subjectAlternativeName.AddIpAddress(IPAddress.Loopback);
+                certificateRequest.CertificateExtensions.Add(subjectAlternativeName.Build());
+                certificateRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+                certificateRequest.CertificateExtensions.Add(new X509KeyUsageExtension(
+                    X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
+                var serverAuthentication = new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") };
+                certificateRequest.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(serverAuthentication, false));
+                using (var generatedCertificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1)))
+                {
+                    byte[] pfx = generatedCertificate.Export(X509ContentType.Pfx);
+                    try
+                    {
+                        _certificate = new X509Certificate2(pfx, (string)null,
+                            X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable);
+                    }
+                    finally { Array.Clear(pfx, 0, pfx.Length); }
+                }
+            }
+            if (!_certificate.HasPrivateKey)
+                throw new InvalidOperationException("The local HTTPS test certificate has no usable private key.");
 
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
             var endpoint = (IPEndPoint)_listener.LocalEndpoint;
             Url = "https://127.0.0.1:" + endpoint.Port.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/";
             Console.WriteLine("[LocalTestServer] Listening at " + Url + "; certificate=" + _certificate.Subject +
-                "; thumbprint=" + _certificate.Thumbprint + "; valid=" + _certificate.NotBefore.ToUniversalTime().ToString("O") +
+                "; thumbprint=" + _certificate.Thumbprint + "; privateKey=" + _certificate.HasPrivateKey +
+                "; valid=" + _certificate.NotBefore.ToUniversalTime().ToString("O") +
                 ".." + _certificate.NotAfter.ToUniversalTime().ToString("O"));
             _serveTask = Task.Run((Func<Task>)ServeAsync);
         }
@@ -515,7 +530,6 @@ internal static class WindowsWebView2SmokeTests
             try { _serveTask.Wait(1000); }
             catch { }
             _certificate.Dispose();
-            _privateKey.Dispose();
         }
     }
 }
