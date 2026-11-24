@@ -7,7 +7,14 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="WindowsWebView2SmokeTests.cs" />
     <Compile Include="../BookmarkHtmlTransfer.cs" Link="BookmarkHtmlTransfer.cs" />
     <Compile Include="../DomainRuleMatcher.cs" Link="DomainRuleMatcher.cs" />
+    <Compile Include="../AtomicTextFile.cs" Link="AtomicTextFile.cs" />
+    <Compile Include="../BrowserHistoryStorage.cs" Link="BrowserHistoryStorage.cs" />
+    <Compile Include="../DownloadHistoryStorage.cs" Link="DownloadHistoryStorage.cs" />
+    <Compile Include="../ReaderPathPolicy.cs" Link="ReaderPathPolicy.cs" />
+    <Compile Include="../ReaderPositionStorage.cs" Link="ReaderPositionStorage.cs" />
+    <Compile Include="../SitePermissionStorage.cs" Link="SitePermissionStorage.cs" />
   </ItemGroup>
 </Project>

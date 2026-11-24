@@ -19,20 +19,18 @@ namespace ChenmuBrowser
             new Dictionary<CoreWebView2, string>();
         private readonly Timer _homeGreetingTimer = new Timer();
         private int _historyRetentionDays = 90;
+        private int _downloadHistoryRetentionDays = 30;
+        private bool _restoreReaderPosition;
+        private List<SitePermissionRule> _sitePermissionRules = new List<SitePermissionRule>();
         private bool _pageAnimationsEnabled = true;
         private Label _homeBrandLabel;
         private Label _homeGreetingLabel;
         private Label _homeClockLabel;
         private string HistoryPath { get { return Path.Combine(_dataRoot, "history.tsv"); } }
+        private string DownloadHistoryPath { get { return Path.Combine(_dataRoot, "downloads.tsv"); } }
+        private string ReaderPositionPath { get { return Path.Combine(_dataRoot, "reader-positions.tsv"); } }
+        private string SitePermissionsPath { get { return Path.Combine(_dataRoot, "site-permissions.tsv"); } }
         private string PendingUpdateNoticePath { get { return Path.Combine(_dataRoot, "update-notice.txt"); } }
-
-        private sealed class HistoryEntry
-        {
-            public string Id { get; set; }
-            public DateTime VisitedUtc { get; set; }
-            public string Title { get; set; }
-            public string Url { get; set; }
-        }
 
         private void InitializeV11Features()
         {
@@ -40,7 +38,9 @@ namespace ChenmuBrowser
             _homeGreetingTimer.Tick += delegate { RefreshHomeGreeting(); };
             _homeGreetingTimer.Start();
             RefreshHomeGreeting();
+            _sitePermissionRules = SitePermissionStorage.Read(SitePermissionsPath);
             ReadHistoryEntries();
+            LoadDownloadHistory();
         }
 
         private void LayoutTabSidebarOverlay()
@@ -77,7 +77,9 @@ namespace ChenmuBrowser
 
         private void RecordHistory(CoreWebView2 core)
         {
-            if (core == null || String.IsNullOrWhiteSpace(core.Source))
+            var ownerTab = FindTabForCore(core);
+            if (_isIsolatedTest || ownerTab == null || ownerTab.IsPrivate ||
+                String.IsNullOrWhiteSpace(core.Source))
                 return;
             Uri uri;
             if (!Uri.TryCreate(core.Source, UriKind.Absolute, out uri) ||
@@ -86,7 +88,7 @@ namespace ChenmuBrowser
             try
             {
                 var entries = ReadHistoryEntries();
-                entries.Insert(0, new HistoryEntry
+                entries.Insert(0, new BrowserHistoryRecord
                 {
                     Id = Guid.NewGuid().ToString("N"),
                     VisitedUtc = DateTime.UtcNow,
@@ -102,74 +104,116 @@ namespace ChenmuBrowser
             }
         }
 
-        private List<HistoryEntry> ReadHistoryEntries()
+        private List<BrowserHistoryRecord> ReadHistoryEntries()
         {
-            var entries = new List<HistoryEntry>();
-            try
-            {
-                if (!File.Exists(HistoryPath))
-                    return entries;
-                foreach (var line in File.ReadAllLines(HistoryPath, Encoding.UTF8))
-                {
-                    try
-                    {
-                        var parts = line.Split('\t');
-                        DateTime visited;
-                        if (parts.Length != 4 || String.IsNullOrWhiteSpace(parts[1]) ||
-                            !DateTime.TryParse(parts[0], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out visited))
-                            continue;
-                        var title = Encoding.UTF8.GetString(Convert.FromBase64String(parts[2]));
-                        var url = Encoding.UTF8.GetString(Convert.FromBase64String(parts[3]));
-                        Uri uri;
-                        if (!Uri.TryCreate(url, UriKind.Absolute, out uri) ||
-                            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-                            continue;
-                        entries.Add(new HistoryEntry
-                        {
-                            Id = parts[1],
-                            VisitedUtc = visited.ToUniversalTime(),
-                            Title = title,
-                            Url = url
-                        });
-                    }
-                    catch { }
-                }
-            }
-            catch { }
+            var entries = BrowserHistoryStorage.Read(HistoryPath);
             var pruned = PruneHistory(entries);
             if (pruned.Count != entries.Count)
                 WriteHistoryEntries(pruned);
             return pruned;
         }
 
-        private List<HistoryEntry> PruneHistory(IEnumerable<HistoryEntry> entries)
+        private List<BrowserHistoryRecord> PruneHistory(IEnumerable<BrowserHistoryRecord> entries)
         {
-            var valid = entries.Where(entry => entry != null)
-                .OrderByDescending(entry => entry.VisitedUtc)
-                .ToList();
-            if (_historyRetentionDays > 0)
-            {
-                var cutoff = DateTime.UtcNow.AddDays(-_historyRetentionDays);
-                valid = valid.Where(entry => entry.VisitedUtc >= cutoff).ToList();
-            }
-            return valid;
+            return BrowserHistoryStorage.Prune(entries, _historyRetentionDays, DateTime.UtcNow);
         }
 
-        private void WriteHistoryEntries(List<HistoryEntry> entries)
+        private void WriteHistoryEntries(List<BrowserHistoryRecord> entries)
         {
             try
             {
-                Directory.CreateDirectory(_dataRoot);
-                var lines = entries.Select(entry => entry.VisitedUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture) + "\t" +
-                    entry.Id + "\t" + Convert.ToBase64String(Encoding.UTF8.GetBytes(entry.Title ?? String.Empty)) + "\t" +
-                    Convert.ToBase64String(Encoding.UTF8.GetBytes(entry.Url ?? String.Empty)));
-                File.WriteAllLines(HistoryPath, lines, new UTF8Encoding(false));
+                BrowserHistoryStorage.Write(HistoryPath, entries);
             }
             catch (Exception ex)
             {
                 if (!IsDisposed && !Disposing)
                     _statusLabel.Text = "历史记录无法保存：" + ex.Message;
             }
+        }
+
+        private void LoadDownloadHistory()
+        {
+            if (_isIsolatedTest)
+                return;
+            _downloads.Clear();
+            foreach (var record in DownloadHistoryStorage.Read(DownloadHistoryPath, _downloadHistoryRetentionDays))
+                _downloads.Add(new DownloadEntry { FilePath = record.FilePath, SavedRecord = record });
+            PersistDownloadHistory();
+        }
+
+        private void PersistDownloadHistory()
+        {
+            if (_isIsolatedTest)
+                return;
+            try
+            {
+                var records = new List<DownloadHistoryRecord>();
+                foreach (var entry in _downloads.ToList())
+                {
+                    if (entry == null || (entry.Owner != null && entry.Owner.IsPrivate))
+                        continue;
+                    var record = CreateDownloadHistoryRecord(entry);
+                    if (record != null)
+                        records.Add(record);
+                }
+                var retained = DownloadHistoryStorage.Prune(records, _downloadHistoryRetentionDays, DateTime.UtcNow);
+                DownloadHistoryStorage.Write(DownloadHistoryPath, retained);
+                var retainedIds = new HashSet<string>(retained.Select(record => record.Id), StringComparer.Ordinal);
+                _downloads.RemoveAll(entry => entry != null && entry.Operation == null &&
+                    (entry.SavedRecord == null || !retainedIds.Contains(entry.SavedRecord.Id)));
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed && !Disposing)
+                    _statusLabel.Text = "下载记录无法保存：" + ex.Message;
+            }
+        }
+
+        private static DownloadHistoryRecord CreateDownloadHistoryRecord(DownloadEntry entry)
+        {
+            if (entry == null)
+                return null;
+            if (entry.Operation == null)
+                return entry.SavedRecord;
+
+            var previous = entry.SavedRecord;
+            var state = entry.Operation.State;
+            var status = state == CoreWebView2DownloadState.InProgress
+                ? DownloadRecordStatus.InProgress
+                : state == CoreWebView2DownloadState.Completed
+                    ? DownloadRecordStatus.Completed
+                    : entry.Operation.InterruptReason == CoreWebView2DownloadInterruptReason.UserCanceled
+                        ? DownloadRecordStatus.Canceled
+                        : DownloadRecordStatus.Interrupted;
+            long received = Math.Max(0L, entry.Operation.BytesReceived);
+            long? total = null;
+            try
+            {
+                var value = entry.Operation.TotalBytesToReceive;
+                if (value.HasValue)
+                {
+                    long converted = Convert.ToInt64(value.Value, CultureInfo.InvariantCulture);
+                    if (converted >= 0)
+                        total = converted;
+                }
+            }
+            catch { }
+
+            var record = new DownloadHistoryRecord
+            {
+                Id = previous == null || String.IsNullOrWhiteSpace(previous.Id) ? Guid.NewGuid().ToString("N") : previous.Id,
+                StartedUtc = previous == null ? DateTime.UtcNow : previous.StartedUtc,
+                FinishedUtc = status == DownloadRecordStatus.InProgress
+                    ? (DateTime?)null
+                    : previous != null && previous.FinishedUtc.HasValue ? previous.FinishedUtc : DateTime.UtcNow,
+                FilePath = entry.FilePath,
+                FileName = Path.GetFileName(entry.FilePath),
+                Status = status,
+                BytesReceived = received,
+                TotalBytes = total
+            };
+            entry.SavedRecord = record;
+            return record;
         }
 
         private bool ClearHistoryEntries()
@@ -271,7 +315,7 @@ namespace ChenmuBrowser
             {
                 if (list.SelectedItems.Count == 0)
                     return;
-                var entry = list.SelectedItems[0].Tag as HistoryEntry;
+                var entry = list.SelectedItems[0].Tag as BrowserHistoryRecord;
                 if (entry == null)
                     return;
                 dialog.Close();
@@ -290,7 +334,7 @@ namespace ChenmuBrowser
             {
                 if (list.SelectedItems.Count == 0)
                     return;
-                var entry = list.SelectedItems[0].Tag as HistoryEntry;
+                var entry = list.SelectedItems[0].Tag as BrowserHistoryRecord;
                 if (entry == null)
                     return;
                 WriteHistoryEntries(ReadHistoryEntries().Where(item => item.Id != entry.Id).ToList());
@@ -320,58 +364,82 @@ namespace ChenmuBrowser
                 MinimizeBox = false,
                 MaximizeBox = false,
                 ShowInTaskbar = false,
-                ClientSize = new System.Drawing.Size(470, 460),
+                ClientSize = new System.Drawing.Size(500, 610),
                 Font = Font
             };
             var engineLabel = new Label { Text = "默认搜索", AutoSize = true, Location = new System.Drawing.Point(22, 24) };
-            var engine = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new System.Drawing.Point(148, 19), Width = 260 };
+            var engine = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new System.Drawing.Point(160, 19), Width = 300 };
             engine.Items.Add("Google");
             engine.Items.Add("Bing");
             engine.Items.Add("Soumu（DuckDuckGo 第三方结果）");
             engine.SelectedIndex = _searchEngine == "bing" ? 1 : _searchEngine == "soumu" ? 2 : 0;
-            var retentionLabel = new Label { Text = "历史记录保留", AutoSize = true, Location = new System.Drawing.Point(22, 68) };
-            var retention = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new System.Drawing.Point(148, 63), Width = 260 };
+            var retentionLabel = new Label { Text = "历史记录保留", AutoSize = true, Location = new System.Drawing.Point(22, 62) };
+            var retention = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new System.Drawing.Point(160, 57), Width = 300 };
             retention.Items.AddRange(new object[] { "7 天", "30 天", "90 天", "365 天", "不自动清理" });
             var retentionValues = new[] { 7, 30, 90, 365, 0 };
             var retentionIndex = Array.IndexOf(retentionValues, _historyRetentionDays);
             retention.SelectedIndex = retentionIndex < 0 ? 2 : retentionIndex;
-            var block = new CheckBox { Text = "拦截广告与跟踪域名（随附本地域名列表）", AutoSize = true, Location = new System.Drawing.Point(24, 112), Checked = _blockTrackers };
-            var saver = new CheckBox { Text = "省流模式（不加载图片）", AutoSize = true, Location = new System.Drawing.Point(24, 148), Checked = _dataSaver };
-            var animations = new CheckBox { Text = "启用轻量页面淡入动画", AutoSize = true, Location = new System.Drawing.Point(24, 184), Checked = _pageAnimationsEnabled };
+            var downloadRetentionLabel = new Label { Text = "下载记录保留", AutoSize = true, Location = new System.Drawing.Point(22, 100) };
+            var downloadRetention = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new System.Drawing.Point(160, 95), Width = 300 };
+            downloadRetention.Items.AddRange(new object[] { "7 天", "30 天", "90 天", "365 天", "不按日期清理" });
+            var downloadRetentionIndex = Array.IndexOf(retentionValues, _downloadHistoryRetentionDays);
+            downloadRetention.SelectedIndex = downloadRetentionIndex < 0 ? 1 : downloadRetentionIndex;
+            var block = new CheckBox { Text = "拦截广告与跟踪域名（随附本地域名列表）", AutoSize = true, Location = new System.Drawing.Point(24, 137), Checked = _blockTrackers };
+            var saver = new CheckBox { Text = "省流模式（不加载图片）", AutoSize = true, Location = new System.Drawing.Point(24, 167), Checked = _dataSaver };
+            var animations = new CheckBox { Text = "启用轻量页面淡入动画", AutoSize = true, Location = new System.Drawing.Point(24, 197), Checked = _pageAnimationsEnabled };
             var restoreSession = new CheckBox
             {
                 Text = "退出后恢复上次普通浏览会话（仅本机保存网址）",
                 AutoSize = true,
-                Location = new System.Drawing.Point(24, 220),
+                Location = new System.Drawing.Point(24, 227),
                 Checked = _restorePreviousSession
+            };
+            var restoreReaderPosition = new CheckBox
+            {
+                Text = "记住 Reader 的文档页码/章节位置",
+                AutoSize = true,
+                Location = new System.Drawing.Point(24, 257),
+                Checked = _restoreReaderPosition
             };
             var manageAllowlist = new Button
             {
                 Text = "管理站点允许列表…",
-                Width = 190,
+                Width = 195,
                 Height = 32,
-                Location = new System.Drawing.Point(24, 256)
+                Location = new System.Drawing.Point(24, 290)
             };
             manageAllowlist.Click += delegate { ShowSiteAllowlistDialog(); };
+            var managePermissions = new Button
+            {
+                Text = "管理站点权限…",
+                Width = 195,
+                Height = 32,
+                Location = new System.Drawing.Point(234, 290)
+            };
+            managePermissions.Click += delegate { ShowSitePermissionsDialog(); };
             var note = new Label
             {
-                Text = "会话恢复仅在本机保存最多 40 个普通网页网址；私有窗口不会写入会话。\r\n站点例外只绕过随附域名列表，不影响内置防护或省流模式。",
+                Text = "历史记录最多 5,000 条 / 2 MiB；下载记录默认保留 30 天、最多 200 项。清理下载记录只删除元数据，不会删除下载文件。\r\n\r\nReader 位置恢复会在本机保存所选文档的完整路径和页码/章节位置；关闭此项会清除已保存的位置。\r\n摄像头、麦克风、位置与通知权限默认拒绝；仅 HTTPS 站点可在“管理站点权限”中逐项允许。私密标签不会写入历史或下载记录。",
                 AutoSize = false,
-                Location = new System.Drawing.Point(24, 302),
-                Size = new System.Drawing.Size(420, 58),
+                Location = new System.Drawing.Point(24, 337),
+                Size = new System.Drawing.Size(452, 204),
                 ForeColor = Color.FromArgb(105, 117, 131)
             };
-            var cancel = new Button { Text = "取消", Width = 84, Height = 32, Location = new System.Drawing.Point(276, 406), DialogResult = DialogResult.Cancel };
-            var save = new Button { Text = "保存", Width = 84, Height = 32, Location = new System.Drawing.Point(370, 406), DialogResult = DialogResult.OK };
+            var cancel = new Button { Text = "取消", Width = 84, Height = 32, Location = new System.Drawing.Point(304, 562), DialogResult = DialogResult.Cancel };
+            var save = new Button { Text = "保存", Width = 84, Height = 32, Location = new System.Drawing.Point(398, 562), DialogResult = DialogResult.OK };
             dialog.Controls.Add(engineLabel);
             dialog.Controls.Add(engine);
             dialog.Controls.Add(retentionLabel);
             dialog.Controls.Add(retention);
+            dialog.Controls.Add(downloadRetentionLabel);
+            dialog.Controls.Add(downloadRetention);
             dialog.Controls.Add(block);
             dialog.Controls.Add(saver);
             dialog.Controls.Add(animations);
             dialog.Controls.Add(restoreSession);
+            dialog.Controls.Add(restoreReaderPosition);
             dialog.Controls.Add(manageAllowlist);
+            dialog.Controls.Add(managePermissions);
             dialog.Controls.Add(note);
             dialog.Controls.Add(cancel);
             dialog.Controls.Add(save);
@@ -382,15 +450,20 @@ namespace ChenmuBrowser
                 return;
             _searchEngine = engine.SelectedIndex == 1 ? "bing" : engine.SelectedIndex == 2 ? "soumu" : "google";
             _historyRetentionDays = retentionValues[Math.Max(0, retention.SelectedIndex)];
+            _downloadHistoryRetentionDays = retentionValues[Math.Max(0, downloadRetention.SelectedIndex)];
             _blockTrackers = block.Checked;
             _dataSaver = saver.Checked;
             var restoreSessionChanged = _restorePreviousSession != restoreSession.Checked;
             _restorePreviousSession = restoreSession.Checked;
+            var restoreReaderPositionChanged = _restoreReaderPosition != restoreReaderPosition.Checked;
+            _restoreReaderPosition = restoreReaderPosition.Checked;
             var animationsChanged = _pageAnimationsEnabled != animations.Checked;
             _pageAnimationsEnabled = animations.Checked;
             if (_homeSearchEngineButton != null)
                 _homeSearchEngineButton.Text = GetSearchEngineDisplayName(_searchEngine) + " ▾";
             SavePreferences();
+            if (restoreReaderPositionChanged && !_restoreReaderPosition)
+                ReaderPositionStorage.Clear(ReaderPositionPath);
             if (restoreSessionChanged)
             {
                 if (_restorePreviousSession)
@@ -402,9 +475,178 @@ namespace ChenmuBrowser
                 }
             }
             ReadHistoryEntries();
+            PersistDownloadHistory();
             if (animationsChanged)
                 ApplyPageAnimations();
             _statusLabel.Text = "浏览器设置已保存。";
+        }
+
+        private void ShowSitePermissionsDialog()
+        {
+            var dialog = new Form
+            {
+                Text = "站点权限",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowInTaskbar = false,
+                ClientSize = new System.Drawing.Size(600, 470),
+                Font = Font
+            };
+            var rules = SitePermissionStorage.Read(SitePermissionsPath);
+            var originBox = new TextBox { Location = new System.Drawing.Point(18, 18), Width = 350, Height = 25 };
+            SetCueBanner(originBox, "输入 HTTPS 站点，例如 https://example.com");
+            var currentButton = new Button { Text = "当前 HTTPS 站点", Location = new System.Drawing.Point(378, 16), Width = 122, Height = 30 };
+            var addButton = new Button { Text = "添加", Location = new System.Drawing.Point(508, 16), Width = 72, Height = 30 };
+            var sites = new ListBox
+            {
+                Location = new System.Drawing.Point(18, 56),
+                Size = new System.Drawing.Size(230, 292),
+                IntegralHeight = false,
+                Font = dialog.Font
+            };
+            var permissions = new GroupBox
+            {
+                Text = "所选 HTTPS 站点可使用的权限",
+                Location = new System.Drawing.Point(262, 56),
+                Size = new System.Drawing.Size(318, 292),
+                Font = dialog.Font
+            };
+            var camera = new CheckBox { Text = "允许摄像头", AutoSize = true, Location = new System.Drawing.Point(18, 38), Enabled = false };
+            var microphone = new CheckBox { Text = "允许麦克风", AutoSize = true, Location = new System.Drawing.Point(18, 86), Enabled = false };
+            var geolocation = new CheckBox { Text = "允许地理位置", AutoSize = true, Location = new System.Drawing.Point(18, 134), Enabled = false };
+            var notifications = new CheckBox { Text = "允许通知", AutoSize = true, Location = new System.Drawing.Point(18, 182), Enabled = false };
+            permissions.Controls.Add(camera);
+            permissions.Controls.Add(microphone);
+            permissions.Controls.Add(geolocation);
+            permissions.Controls.Add(notifications);
+            var saveButton = new Button { Text = "保存所选权限", Location = new System.Drawing.Point(262, 360), Width = 112, Height = 32, Enabled = false };
+            var removeButton = new Button { Text = "删除站点规则", Location = new System.Drawing.Point(382, 360), Width = 108, Height = 32, Enabled = false };
+            var closeButton = new Button { Text = "关闭", Location = new System.Drawing.Point(498, 360), Width = 82, Height = 32, DialogResult = DialogResult.Cancel };
+            var note = new Label
+            {
+                Text = "未在此处允许的权限一律拒绝；只接受 HTTPS 来源，应用不会弹出打断式权限提示。删除规则或取消勾选即恢复默认拒绝。",
+                Location = new System.Drawing.Point(18, 405),
+                Size = new System.Drawing.Size(562, 48),
+                ForeColor = Color.FromArgb(105, 117, 131)
+            };
+            dialog.Controls.Add(originBox);
+            dialog.Controls.Add(currentButton);
+            dialog.Controls.Add(addButton);
+            dialog.Controls.Add(sites);
+            dialog.Controls.Add(permissions);
+            dialog.Controls.Add(saveButton);
+            dialog.Controls.Add(removeButton);
+            dialog.Controls.Add(closeButton);
+            dialog.Controls.Add(note);
+            dialog.CancelButton = closeButton;
+
+            Action refresh = delegate
+            {
+                string selected = sites.SelectedItem as string;
+                sites.BeginUpdate();
+                sites.Items.Clear();
+                foreach (var rule in rules.OrderBy(item => item.Origin, StringComparer.OrdinalIgnoreCase))
+                    sites.Items.Add(rule.Origin);
+                sites.EndUpdate();
+                if (!String.IsNullOrWhiteSpace(selected))
+                    sites.SelectedItem = selected;
+                if (sites.SelectedIndex < 0 && sites.Items.Count > 0)
+                    sites.SelectedIndex = 0;
+            };
+            Action loadSelection = delegate
+            {
+                var selected = sites.SelectedItem as string;
+                originBox.Text = selected ?? originBox.Text;
+                var rule = selected == null ? null : rules.FirstOrDefault(item =>
+                    String.Equals(item.Origin, selected, StringComparison.OrdinalIgnoreCase));
+                camera.Checked = rule != null && rule.Allowed.Contains(SitePermissionKind.Camera);
+                microphone.Checked = rule != null && rule.Allowed.Contains(SitePermissionKind.Microphone);
+                geolocation.Checked = rule != null && rule.Allowed.Contains(SitePermissionKind.Geolocation);
+                notifications.Checked = rule != null && rule.Allowed.Contains(SitePermissionKind.Notifications);
+                bool hasSelection = selected != null;
+                camera.Enabled = microphone.Enabled = geolocation.Enabled = notifications.Enabled = hasSelection;
+                saveButton.Enabled = removeButton.Enabled = hasSelection;
+            };
+            sites.SelectedIndexChanged += delegate { loadSelection(); };
+            currentButton.Click += delegate
+            {
+                var core = _activeTab == null || _activeTab.WebView == null ? null : _activeTab.WebView.CoreWebView2;
+                string origin = core == null ? null : SitePermissionStorage.NormalizeSecureOrigin(core.Source);
+                if (origin == null)
+                {
+                    MessageBox.Show(dialog, "当前页面不是 HTTPS 站点。请打开 HTTPS 页面，或输入一个 HTTPS 来源。", "站点权限",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                originBox.Text = origin;
+            };
+            addButton.Click += delegate
+            {
+                string origin = SitePermissionStorage.NormalizeSecureOrigin(originBox.Text.Trim());
+                if (origin == null)
+                {
+                    MessageBox.Show(dialog, "请输入有效的 HTTPS 站点地址。", "站点权限",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                if (!rules.Any(item => String.Equals(item.Origin, origin, StringComparison.OrdinalIgnoreCase)))
+                    rules.Add(new SitePermissionRule { Origin = origin });
+                refresh();
+                sites.SelectedItem = origin;
+                loadSelection();
+            };
+            saveButton.Click += delegate
+            {
+                var origin = sites.SelectedItem as string;
+                var rule = origin == null ? null : rules.FirstOrDefault(item =>
+                    String.Equals(item.Origin, origin, StringComparison.OrdinalIgnoreCase));
+                if (rule == null)
+                    return;
+                rule.Allowed.Clear();
+                if (camera.Checked) rule.Allowed.Add(SitePermissionKind.Camera);
+                if (microphone.Checked) rule.Allowed.Add(SitePermissionKind.Microphone);
+                if (geolocation.Checked) rule.Allowed.Add(SitePermissionKind.Geolocation);
+                if (notifications.Checked) rule.Allowed.Add(SitePermissionKind.Notifications);
+                if (rule.Allowed.Count == 0)
+                    rules.Remove(rule);
+                try
+                {
+                    SitePermissionStorage.Write(SitePermissionsPath, rules);
+                    _sitePermissionRules = SitePermissionStorage.Read(SitePermissionsPath);
+                    _statusLabel.Text = "站点权限已保存；未明确允许的权限仍会被拒绝。";
+                    refresh();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(dialog, "无法保存站点权限：" + ex.Message, "站点权限",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            };
+            removeButton.Click += delegate
+            {
+                var origin = sites.SelectedItem as string;
+                if (origin == null)
+                    return;
+                rules.RemoveAll(item => String.Equals(item.Origin, origin, StringComparison.OrdinalIgnoreCase));
+                try
+                {
+                    SitePermissionStorage.Write(SitePermissionsPath, rules);
+                    _sitePermissionRules = SitePermissionStorage.Read(SitePermissionsPath);
+                    refresh();
+                    loadSelection();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(dialog, "无法删除站点权限：" + ex.Message, "站点权限",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            };
+            refresh();
+            loadSelection();
+            ApplyDialogStyle(dialog);
+            dialog.ShowDialog(this);
         }
 
         private void ShowSiteAllowlistDialog()

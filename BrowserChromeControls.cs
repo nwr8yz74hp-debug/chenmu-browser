@@ -164,6 +164,22 @@ namespace ChenmuBrowser
         {
             if (Width < 1 || Height < 1)
                 return;
+            if (BackgroundImage != null)
+            {
+                var image = BackgroundImage;
+                float scale = Math.Max((float)ClientSize.Width / image.Width, (float)ClientSize.Height / image.Height);
+                float width = image.Width * scale;
+                float height = image.Height * scale;
+                var bounds = new RectangleF((ClientSize.Width - width) / 2F, (ClientSize.Height - height) / 2F, width, height);
+                var state = e.Graphics.Save();
+                e.Graphics.SetClip(ClientRectangle);
+                e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                e.Graphics.DrawImage(image, bounds);
+                using (var overlay = new SolidBrush(Color.FromArgb(178, Color.White)))
+                    e.Graphics.FillRectangle(overlay, ClientRectangle);
+                e.Graphics.Restore(state);
+                return;
+            }
             using (var brush = new LinearGradientBrush(ClientRectangle, StartColor, EndColor, 90F))
                 e.Graphics.FillRectangle(brush, ClientRectangle);
         }

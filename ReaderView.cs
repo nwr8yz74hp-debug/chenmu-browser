@@ -11,6 +11,8 @@ namespace ChenmuBrowser
     internal sealed class ReaderView : UserControl
     {
         private readonly Func<Task<CoreWebView2Environment>> _getEnvironment;
+        private readonly Func<string, int, int> _getSavedPageIndex;
+        private readonly Action<string, int> _savePageIndex;
         private readonly WebView2 _view = new WebView2();
         private readonly Label _fileLabel = new Label();
         private readonly Label _pageLabel = new Label();
@@ -22,14 +24,18 @@ namespace ChenmuBrowser
         private ReaderDocument _document;
         private string _activeTemporaryRoot;
         private string _allowedFileRoot;
+        private string _currentDocumentPath;
         private bool _webViewReady;
         private bool _loading;
         private bool _initializing;
         private int _pageIndex;
 
-        public ReaderView(Func<Task<CoreWebView2Environment>> getEnvironment)
+        public ReaderView(Func<Task<CoreWebView2Environment>> getEnvironment,
+            Func<string, int, int> getSavedPageIndex = null, Action<string, int> savePageIndex = null)
         {
             _getEnvironment = getEnvironment ?? throw new ArgumentNullException(nameof(getEnvironment));
+            _getSavedPageIndex = getSavedPageIndex ?? delegate { return 0; };
+            _savePageIndex = savePageIndex ?? delegate { };
             Dock = DockStyle.Fill;
             BackColor = Color.FromArgb(246, 248, 251);
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
@@ -181,8 +187,11 @@ namespace ChenmuBrowser
                 Uri uri;
                 if (!Uri.TryCreate(args.Request.Uri, UriKind.Absolute, out uri))
                     return;
-                if (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
-                    uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                if (uri.IsFile && !ReaderPathPolicy.IsAllowedLocalPath(uri.LocalPath, _allowedFileRoot))
+                    args.Response = core.Environment.CreateWebResourceResponse(null, 403,
+                        "Blocked by CHENMU Reader", "Content-Type: text/plain; charset=utf-8");
+                else if (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                         uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
                     args.Response = core.Environment.CreateWebResourceResponse(null, 403,
                         "Blocked by CHENMU Reader", "Content-Type: text/plain; charset=utf-8");
             };
@@ -196,7 +205,7 @@ namespace ChenmuBrowser
                 }
                 if (uri.Scheme.Equals(Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!IsAllowedLocalPath(uri.LocalPath))
+                    if (!ReaderPathPolicy.IsAllowedLocalPath(uri.LocalPath, _allowedFileRoot))
                         args.Cancel = true;
                     return;
                 }
@@ -206,24 +215,6 @@ namespace ChenmuBrowser
                     return;
                 args.Cancel = true;
             };
-        }
-
-        private bool IsAllowedLocalPath(string path)
-        {
-            try
-            {
-                string fullPath = Path.GetFullPath(path);
-                if (String.IsNullOrWhiteSpace(_allowedFileRoot))
-                    return false;
-                string root = Path.GetFullPath(_allowedFileRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                return fullPath.Equals(root, StringComparison.OrdinalIgnoreCase) ||
-                       fullPath.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-                       fullPath.StartsWith(root + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
-            }
-            catch
-            {
-                return false;
-            }
         }
 
         private async Task ChooseAndOpenAsync()
@@ -255,7 +246,10 @@ namespace ChenmuBrowser
                     return;
                 }
                 _document = loaded;
-                _pageIndex = 0;
+                _currentDocumentPath = Path.GetFullPath(path);
+                _pageIndex = loaded.Pages.Count == 0
+                    ? 0
+                    : Math.Max(0, Math.Min(_getSavedPageIndex(_currentDocumentPath, loaded.Pages.Count), loaded.Pages.Count - 1));
                 _activeTemporaryRoot = loaded.TemporaryRoot;
                 _allowedFileRoot = !String.IsNullOrWhiteSpace(loaded.TemporaryRoot)
                     ? loaded.TemporaryRoot
@@ -264,6 +258,7 @@ namespace ChenmuBrowser
                 UpdateNavigation();
                 if (_webViewReady)
                     RenderCurrentPage();
+                SaveCurrentPosition();
                 if (!String.IsNullOrWhiteSpace(previousTemporaryRoot) &&
                     !String.Equals(previousTemporaryRoot, _activeTemporaryRoot, StringComparison.OrdinalIgnoreCase))
                     TryDeleteDirectory(previousTemporaryRoot);
@@ -306,6 +301,15 @@ namespace ChenmuBrowser
             _pageIndex = newIndex;
             UpdateNavigation();
             RenderCurrentPage();
+            SaveCurrentPosition();
+        }
+
+        private void SaveCurrentPosition()
+        {
+            if (_document == null || String.IsNullOrWhiteSpace(_currentDocumentPath))
+                return;
+            try { _savePageIndex(_currentDocumentPath, _pageIndex); }
+            catch { }
         }
 
         private void RenderCurrentPage()
@@ -387,6 +391,7 @@ namespace ChenmuBrowser
         {
             if (disposing)
             {
+                SaveCurrentPosition();
                 try { _view.Dispose(); } catch { }
                 TryDeleteDirectory(_activeTemporaryRoot);
                 _activeTemporaryRoot = null;

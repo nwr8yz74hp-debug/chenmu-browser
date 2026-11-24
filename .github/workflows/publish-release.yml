@@ -35,6 +35,24 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME must match project version v$version"
           }
 
+      - name: Run cross-platform logic tests
+        shell: pwsh
+        run: dotnet run --project tests/BrowserLogicTests.csproj -c Release
+
+      # The owner explicitly requested a v1.4.0 in-app test release before these
+      # Windows-only security checks are verified. Keep the step and its outcome
+      # visible; only this tag may continue to packaging after a failed smoke test.
+      - name: Run Windows WebView2 security smoke tests
+        id: webview2_smoke
+        continue-on-error: ${{ github.ref == 'refs/tags/v1.4.0' }}
+        shell: pwsh
+        run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
+
+      - name: Report non-passing v1.4.0 WebView2 smoke test
+        if: ${{ steps.webview2_smoke.outcome == 'failure' }}
+        shell: pwsh
+        run: Write-Host '::warning::Windows WebView2 security smoke test did not pass. Publication continues only because the owner explicitly requested the v1.4.0 self-test release; permission and Reader boundary behavior remains unverified.'
+
       - name: Build application and installer
         shell: pwsh
         run: .\build-windows.ps1
