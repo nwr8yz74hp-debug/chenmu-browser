@@ -307,6 +307,86 @@ internal static class BrowserLogicTests
         finally { TryDelete(root); }
     }
 
+    private static void TestV15RecentlyClosedTabsAndZoom()
+    {
+        var closed = new RecentlyClosedTabs();
+        closed.Record("https://example.com/normal", "普通页面", 1.25, false, false);
+        closed.Record("https://example.com/private", "私密页面", 1.0, true, false);
+        closed.Record("https://example.com/reader", "Reader", 1.0, false, true);
+        closed.Record("file:///C:/secret.txt", "本地文件", 1.0, false, false);
+        Assert(closed.Count == 1, "最近关闭标签只记录普通 HTTP(S) 页面，不记录隐私、Reader 或本地文件");
+        var restored = closed.Pop();
+        Assert(restored != null && restored.Url == "https://example.com/normal" && restored.Title == "普通页面",
+            "最近关闭标签按最近优先保留网址与标题");
+        Assert(Math.Abs(restored.ZoomFactor - 1.25) < 0.001, "最近关闭标签恢复该标签缩放比例");
+        Assert(closed.Pop() == null, "最近关闭标签弹出后不重复恢复");
+
+        closed.Record("https://example.com/first", "先关闭", 1.0, false, false);
+        closed.Record("https://example.com/second", "后关闭", 1.5, false, false);
+        var menuItems = closed.GetItems();
+        Assert(menuItems.Count == 2 && menuItems[0].Url.EndsWith("/second"), "最近关闭菜单快照按最近优先返回");
+        menuItems[0].Url = "https://tampered.example/";
+        Assert(closed.GetItems()[0].Url.EndsWith("/second"), "菜单快照修改不会污染最近关闭栈");
+        var selected = closed.PopAt(1);
+        Assert(selected != null && selected.Url.EndsWith("/first") && closed.Count == 1,
+            "可从最近关闭列表恢复指定项目并只移除该项目");
+        closed.Pop();
+
+        for (var index = 0; index < RecentlyClosedTabs.MaximumEntries + 3; index++)
+            closed.Record("https://example.com/" + index, "页面 " + index, 1.0, false, false);
+        Assert(closed.Count == RecentlyClosedTabs.MaximumEntries, "最近关闭标签栈最多保留 10 项");
+        Assert(closed.Pop().Url.EndsWith("/" + (RecentlyClosedTabs.MaximumEntries + 2)), "最近关闭标签恢复最新关闭页面");
+
+        Assert(Math.Abs(BrowserZoomPolicy.Adjust(1.0, 1) - 1.1) < 0.001, "缩放快捷键按 10% 步长增加");
+        Assert(Math.Abs(BrowserZoomPolicy.Adjust(5.0, 1) - BrowserZoomPolicy.Maximum) < 0.001,
+            "缩放比例不会超过上限");
+        Assert(Math.Abs(BrowserZoomPolicy.Adjust(0.25, -1) - BrowserZoomPolicy.Minimum) < 0.001,
+            "缩放比例不会低于下限");
+        Assert(Math.Abs(BrowserZoomPolicy.Normalize(Double.NaN) - BrowserZoomPolicy.Default) < 0.001,
+            "非法缩放值安全回到 100%");
+    }
+
+    private static void TestV15ExtensionManifestPolicy()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var manifestPath = Path.Combine(root, "manifest.json");
+            File.WriteAllText(manifestPath,
+                "{\"manifest_version\":3,\"name\":\"Local smoke extension\",\"permissions\":[\"storage\"],\"host_permissions\":[\"https://example.com/*\"]}",
+                Encoding.UTF8);
+            var manifest = ExtensionManifestPolicy.Read(root);
+            Assert(manifest.Name == "Local smoke extension" && manifest.ManifestVersion == 3,
+                "读取已解压扩展的名称和 manifest 版本");
+            Assert(manifest.Permissions.Contains("storage") && manifest.Permissions.Contains("https://example.com/*"),
+                "提取扩展请求的网页数据权限以供用户确认");
+
+            File.Delete(manifestPath);
+            AssertThrows<InvalidDataException>(() => ExtensionManifestPolicy.Read(root), "拒绝缺少 manifest.json 的扩展目录");
+            File.WriteAllText(manifestPath, "{\"manifest_version\":1,\"name\":\"obsolete\"}", Encoding.UTF8);
+            AssertThrows<InvalidDataException>(() => ExtensionManifestPolicy.Read(root), "拒绝不支持的扩展 manifest 版本");
+        }
+        finally { TryDelete(root); }
+    }
+
+    private static void TestV15QrCodeGeneration()
+    {
+        var bytes = QrCodeService.CreatePng("https://example.com/本地二维码?ok=1");
+        Assert(bytes.Length > 100, "当前网址二维码在本机生成有效 PNG 字节");
+        Assert(bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47,
+            "二维码图片使用 PNG 签名");
+        AssertThrows<ArgumentException>(() => QrCodeService.CreatePng("file:///C:/secret.txt"),
+            "二维码不接受非 HTTP(S) 网址");
+    }
+
+    private static void AssertThrows<TException>(Action action, string description) where TException : Exception
+    {
+        _assertions++;
+        try { action(); }
+        catch (TException) { return; }
+        throw new InvalidOperationException("失败：" + description);
+    }
+
     private static void TestUpdateNoticeVersionIsolation()
     {
         var cumulativeNotes = "# CHENMU Browser v1.4.2 更新说明\n" +
@@ -357,6 +437,9 @@ internal static class BrowserLogicTests
         TestDownloadHistoryStorage();
         TestSitePermissionStorage();
         TestReaderPositionStorage();
+        TestV15RecentlyClosedTabsAndZoom();
+        TestV15ExtensionManifestPolicy();
+        TestV15QrCodeGeneration();
         TestUpdateNoticeVersionIsolation();
         Console.WriteLine("通过：" + _assertions + " 项逻辑断言。");
         return 0;

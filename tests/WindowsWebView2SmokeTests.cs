@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -29,6 +30,10 @@ internal static class WindowsWebView2SmokeTests
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindow(string className, string windowName);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr handle);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumChildWindows(IntPtr parent, EnumChildWindowCallback callback, IntPtr parameter);
@@ -50,7 +55,7 @@ internal static class WindowsWebView2SmokeTests
         {
             string browserData = Path.Combine(root, "browser-data");
             Directory.CreateDirectory(browserData);
-            File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.4.4\r\n", new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.5.0\r\n", new UTF8Encoding(false));
             using (var server = new LocalTestServer())
             using (var browser = new BrowserForm(browserData, true, 1))
             {
@@ -61,10 +66,15 @@ internal static class WindowsWebView2SmokeTests
                         try
                         {
                             TestWallpaperMenuLifecycle(browser);
+                            await TestV15NavigationHistoryAsync(browser);
+                            await TestV15FindZoomAndRecentlyClosedAsync(browser);
+                            await TestV15ExtensionsAsync(browser, root);
+                            await TestV15PageExportsAndCancelAsync(browser, root);
                             await TestDefaultDenyPermissionsAsync(browser, server);
                             await TestReaderSubresourceBoundaryAsync(root);
                             await TestBackgroundResumeAsync(browser);
-                            Console.WriteLine("PASS: permission, Reader boundary and background-resume regressions.");
+                            await CaptureRunningBrowserScreenshotAsync(browser);
+                            Console.WriteLine("PASS: v1.5 navigation, find, zoom, extensions, recent tabs, exports, permission, Reader boundary and background-resume regressions.");
                         }
                         catch (Exception ex)
                         {
@@ -121,15 +131,16 @@ internal static class WindowsWebView2SmokeTests
                     };
                     EnumChildWindows(dialog, callback, IntPtr.Zero);
                     var message = String.Join(Environment.NewLine, text);
-                    if (!message.Contains("已更新至 v1.4.4") ||
-                        !message.Contains("切回前台时多余的窗口标题栏重算") ||
+                if (!message.Contains("已更新至 v1.5.0") ||
+                        !message.Contains("修复前进/返回历史导航") ||
+                        !message.Contains("截图当前可见 WebView 网页") ||
                         message.Contains("更新完成弹窗误显示过往版本更新内容") ||
-                        message.Contains("修复新标签页壁纸被白色遮罩洗淡") ||
+                        message.Contains("切回前台时多余的窗口标题栏重算") ||
                         message.Contains("ContextMenuStrip 已释放异常"))
-                        throw new InvalidOperationException("The visible update dialog did not contain only the current v1.4.4 changelog: " + message);
+                        throw new InvalidOperationException("The visible update dialog did not contain only the current v1.5.0 changelog: " + message);
 
                     _updateNoticeValidated = true;
-                    Console.WriteLine("PASS: visible v1.4.4 update dialog contains only the current Chinese changelog.");
+                    Console.WriteLine("PASS: visible v1.5.0 update dialog contains only the current Chinese changelog.");
                 }
                 catch (Exception ex)
                 {
@@ -146,7 +157,7 @@ internal static class WindowsWebView2SmokeTests
             if (DateTime.UtcNow >= deadline)
             {
                 timer.Stop();
-                _failure = new TimeoutException("The v1.4.4 update-complete dialog did not appear within 15 seconds.");
+                _failure = new TimeoutException("The v1.5.0 update-complete dialog did not appear within 15 seconds.");
                 try { browser.Close(); }
                 catch { }
             }
@@ -188,6 +199,469 @@ internal static class WindowsWebView2SmokeTests
             throw new InvalidOperationException("The wallpaper menu could not be reopened after a menu-item click.");
 
         Console.WriteLine("PASS: wallpaper ContextMenuStrip remains reusable after closing and is disposed with BrowserForm.");
+    }
+
+    private static async Task TestV15NavigationHistoryAsync(BrowserForm browser)
+    {
+        await EnsureBrowserWebViewAsync(browser);
+        using (var server = new LocalHttpTestServer())
+        {
+            var firstTab = GetActiveTab(browser);
+            var firstCore = GetCoreForTab(firstTab);
+            string a = server.Url + "a";
+            string b = server.Url + "b";
+            string c = server.Url + "c";
+            await NavigateCoreAndWaitAsync(firstCore, a);
+            await NavigateCoreAndWaitAsync(firstCore, b);
+            await NavigateCoreAndWaitAsync(firstCore, c);
+            if (!String.Equals(firstCore.Source, new Uri(c).AbsoluteUri, StringComparison.OrdinalIgnoreCase) || !firstCore.CanGoBack)
+                throw new InvalidOperationException("The A→B→C HTTP navigation sequence did not create a back history entry.");
+
+            await NavigateHistoryAndWaitAsync(browser, firstCore, "GoBack", b);
+            if (!firstCore.CanGoForward)
+                throw new InvalidOperationException("Going back from C did not preserve the forward history entry.");
+            await NavigateHistoryAndWaitAsync(browser, firstCore, "GoBack", a);
+            await NavigateHistoryAndWaitAsync(browser, firstCore, "GoForward", b);
+            await NavigateHistoryAndWaitAsync(browser, firstCore, "GoForward", c);
+            Console.WriteLine("PASS: HTTP A→B→C back/forward preserves history without re-navigation loops.");
+
+            var createTab = typeof(BrowserForm).GetMethod("CreateNewTab", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (createTab == null)
+                throw new InvalidOperationException("BrowserForm.CreateNewTab was not found.");
+            createTab.Invoke(browser, null);
+            await EnsureBrowserWebViewAsync(browser);
+            var secondTab = GetActiveTab(browser);
+            var secondCore = GetCoreForTab(secondTab);
+            string secondA = server.Url + "second-a";
+            string secondB = server.Url + "second-b";
+            await NavigateCoreAndWaitAsync(secondCore, secondA);
+            await NavigateCoreAndWaitAsync(secondCore, secondB);
+
+            SwitchToTab(browser, firstTab);
+            await NavigateHistoryAndWaitAsync(browser, firstCore, "GoBack", b);
+            if (!String.Equals(secondCore.Source, new Uri(secondB).AbsoluteUri, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Using back on the first tab changed the second tab's URL.");
+            SwitchToTab(browser, secondTab);
+            await NavigateHistoryAndWaitAsync(browser, secondCore, "GoBack", secondA);
+            if (!String.Equals(firstCore.Source, new Uri(b).AbsoluteUri, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Using back on the second tab changed the first tab's URL.");
+            Console.WriteLine("PASS: back navigation is isolated to the active tab.");
+        }
+    }
+
+    private static async Task TestV15FindZoomAndRecentlyClosedAsync(BrowserForm browser)
+    {
+        using (var server = new LocalHttpTestServer())
+        {
+            await EnsureBrowserWebViewAsync(browser);
+            var core = GetCoreForTab(GetActiveTab(browser));
+            string findUrl = server.Url + "find-page";
+            await NavigateCoreAndWaitAsync(core, findUrl);
+
+            var showFind = typeof(BrowserForm).GetMethod("ShowFindBar", BindingFlags.Instance | BindingFlags.NonPublic);
+            var findTextField = typeof(BrowserForm).GetField("_findTextBox", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (showFind == null || findTextField == null)
+                throw new InvalidOperationException("The v1.5 find bar was not found.");
+            showFind.Invoke(browser, null);
+            var findText = findTextField.GetValue(browser) as TextBox;
+            if (findText == null)
+                throw new InvalidOperationException("Ctrl+F did not create its find bar input.");
+            findText.Text = "needle";
+            await WaitUntilAsync(() => core.Find.MatchCount >= 2, 5000);
+            if (core.Find.MatchCount < 2)
+                throw new InvalidOperationException("The v1.5 find bar did not match repeated text in the page.");
+            var closeFind = findText.FindForm();
+            if (closeFind != null)
+                closeFind.Close();
+            Console.WriteLine("PASS: Ctrl+F custom find bar finds and highlights page text.");
+
+            var setZoom = typeof(BrowserForm).GetMethod("SetActiveTabZoom", BindingFlags.Instance | BindingFlags.NonPublic);
+            var createTab = typeof(BrowserForm).GetMethod("CreateNewTab", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (setZoom == null || createTab == null)
+                throw new InvalidOperationException("The v1.5 zoom implementation was not found.");
+            var firstTab = GetActiveTab(browser);
+            setZoom.Invoke(browser, new object[] { 1.35 });
+            if (Math.Abs(((WebView2)GetWebViewForTab(firstTab)).ZoomFactor - 1.35) > 0.001)
+                throw new InvalidOperationException("The active tab did not apply its 135% zoom.");
+            createTab.Invoke(browser, null);
+            await EnsureBrowserWebViewAsync(browser);
+            var secondTab = GetActiveTab(browser);
+            if (Math.Abs(((WebView2)GetWebViewForTab(secondTab)).ZoomFactor - 1.0) > 0.001)
+                throw new InvalidOperationException("A new tab did not start at 100% zoom.");
+            setZoom.Invoke(browser, new object[] { 0.8 });
+            SwitchToTab(browser, firstTab);
+            if (Math.Abs(((WebView2)GetWebViewForTab(firstTab)).ZoomFactor - 1.35) > 0.001 ||
+                Math.Abs(((WebView2)GetWebViewForTab(secondTab)).ZoomFactor - 0.8) > 0.001)
+                throw new InvalidOperationException("Zoom state was not isolated per tab.");
+            Console.WriteLine("PASS: independent per-tab zoom persists across tab switching.");
+
+            var recentField = typeof(BrowserForm).GetField("_recentlyClosedTabs", BindingFlags.Instance | BindingFlags.NonPublic);
+            var closeTab = typeof(BrowserForm).GetMethod("CloseTab", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (recentField == null || closeTab == null)
+                throw new InvalidOperationException("The recently closed tab stack was not found.");
+            var recent = recentField.GetValue(browser);
+            var countProperty = recent.GetType().GetProperty("Count");
+            var before = (int)countProperty.GetValue(recent, null);
+
+            createTab.Invoke(browser, null);
+            await EnsureBrowserWebViewAsync(browser);
+            var privateTab = GetActiveTab(browser);
+            typeof(BrowserForm).GetNestedType("BrowserTab", BindingFlags.NonPublic)
+                .GetProperty("IsPrivate").SetValue(privateTab, true, null);
+            await NavigateCoreAndWaitAsync(GetCoreForTab(privateTab), server.Url + "private-tab");
+            closeTab.Invoke(browser, new[] { privateTab });
+            if ((int)countProperty.GetValue(recent, null) != before)
+                throw new InvalidOperationException("A private tab was added to recently closed history.");
+
+            createTab.Invoke(browser, null);
+            await EnsureBrowserWebViewAsync(browser);
+            var readerMarkedTab = GetActiveTab(browser);
+            await NavigateCoreAndWaitAsync(GetCoreForTab(readerMarkedTab), server.Url + "reader-marked");
+            typeof(BrowserForm).GetNestedType("BrowserTab", BindingFlags.NonPublic)
+                .GetProperty("IsReader").SetValue(readerMarkedTab, true, null);
+            closeTab.Invoke(browser, new[] { readerMarkedTab });
+            if ((int)countProperty.GetValue(recent, null) != before)
+                throw new InvalidOperationException("A Reader tab was added to recently closed history.");
+
+            string closedUrl = server.Url + "ordinary-closed";
+            createTab.Invoke(browser, null);
+            await EnsureBrowserWebViewAsync(browser);
+            var ordinaryTab = GetActiveTab(browser);
+            await NavigateCoreAndWaitAsync(GetCoreForTab(ordinaryTab), closedUrl);
+            setZoom.Invoke(browser, new object[] { 1.3 });
+            closeTab.Invoke(browser, new[] { ordinaryTab });
+            var items = recent.GetType().GetMethod("GetItems").Invoke(recent, null) as System.Collections.IList;
+            if (items == null || items.Count != before + 1)
+                throw new InvalidOperationException("Closing an ordinary HTTP(S) tab did not add one recent item.");
+            var snapshot = items[0];
+            if (!String.Equals((string)snapshot.GetType().GetProperty("Url").GetValue(snapshot, null), new Uri(closedUrl).AbsoluteUri, StringComparison.OrdinalIgnoreCase) ||
+                Math.Abs((double)snapshot.GetType().GetProperty("ZoomFactor").GetValue(snapshot, null) - 1.3) > 0.001)
+                throw new InvalidOperationException("The recent-tab snapshot did not preserve URL and zoom.");
+            var restore = typeof(BrowserForm).GetMethod("RestoreMostRecentlyClosedTab", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (restore == null)
+                throw new InvalidOperationException("The recent-tab restore shortcut implementation was not found.");
+            restore.Invoke(browser, null);
+            await WaitUntilAsync(() =>
+            {
+                var active = GetActiveTab(browser);
+                var restoredCore = GetCoreForTab(active);
+                return restoredCore != null && String.Equals(restoredCore.Source, new Uri(closedUrl).AbsoluteUri, StringComparison.OrdinalIgnoreCase);
+            }, 15000);
+            var restoredTab = GetActiveTab(browser);
+            if (Math.Abs(((WebView2)GetWebViewForTab(restoredTab)).ZoomFactor - 1.3) > 0.001)
+                throw new InvalidOperationException("Restoring a recently closed tab did not restore its zoom.");
+            Console.WriteLine("PASS: recent-tab restore retains only ordinary pages and preserves URL/zoom.");
+        }
+    }
+
+    private static async Task TestV15ExtensionsAsync(BrowserForm browser, string root)
+    {
+        await EnsureBrowserWebViewAsync(browser);
+        var core = GetCoreForTab(GetActiveTab(browser));
+        string extensionDirectory = Path.Combine(root, "smoke-extension");
+        Directory.CreateDirectory(extensionDirectory);
+        File.WriteAllText(Path.Combine(extensionDirectory, "manifest.json"),
+            "{\"manifest_version\":3,\"name\":\"CHENMU smoke extension\",\"version\":\"1.0.0\",\"permissions\":[\"storage\"],\"host_permissions\":[\"http://127.0.0.1/*\"]}",
+            new UTF8Encoding(false));
+        var install = typeof(BrowserForm).GetMethod("InstallExtensionDirectoryAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (install == null)
+            throw new InvalidOperationException("The v1.5 local extension installation method was not found.");
+        var task = (Task<CoreWebView2BrowserExtension>)install.Invoke(browser, new object[] { core.Profile, extensionDirectory });
+        var extension = await task;
+        if (extension == null || !extension.IsEnabled || extension.Name != "CHENMU smoke extension")
+            throw new InvalidOperationException("The selected unpacked extension was not installed and enabled.");
+        await extension.EnableAsync(false);
+        if (extension.IsEnabled)
+            throw new InvalidOperationException("The extension manager could not disable an extension.");
+        await extension.EnableAsync(true);
+        if (!extension.IsEnabled)
+            throw new InvalidOperationException("The extension manager could not re-enable an extension.");
+        await extension.RemoveAsync();
+        var remaining = await core.Profile.GetBrowserExtensionsAsync();
+        if (remaining.Any(item => item.Id == extension.Id))
+            throw new InvalidOperationException("The extension manager did not uninstall the selected extension.");
+        Console.WriteLine("PASS: unpacked local extension installs, enables/disables, and uninstalls through WebView2 profile APIs.");
+    }
+
+    private static async Task TestV15PageExportsAndCancelAsync(BrowserForm browser, string root)
+    {
+        await EnsureBrowserWebViewAsync(browser);
+        var core = GetCoreForTab(GetActiveTab(browser));
+        string pdfPath = Path.Combine(root, "v15-export-smoke.pdf");
+        try
+        {
+            bool savedPdf = await core.PrintToPdfAsync(pdfPath, null);
+            if (!savedPdf || !File.Exists(pdfPath))
+                throw new InvalidOperationException("WebView2 did not produce a PDF output file.");
+            byte[] pdfHeader = File.ReadAllBytes(pdfPath).Take(5).ToArray();
+            if (Encoding.ASCII.GetString(pdfHeader) != "%PDF-")
+                throw new InvalidDataException("The saved page output did not have a PDF signature.");
+        }
+        finally { try { if (File.Exists(pdfPath)) File.Delete(pdfPath); } catch { } }
+
+        byte[] pngBytes;
+        using (var stream = new MemoryStream())
+        {
+            await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);
+            pngBytes = stream.ToArray();
+        }
+        if (pngBytes.Length < 8 || pngBytes[0] != 0x89 || pngBytes[1] != 0x50 || pngBytes[2] != 0x4E || pngBytes[3] != 0x47)
+            throw new InvalidDataException("WebView2 did not capture the visible page as a valid PNG.");
+
+        string uiPdfPath = Path.Combine(root, "v15-ui-export-smoke.pdf");
+        string uiPngPath = Path.Combine(root, "v15-ui-capture-smoke.png");
+        await SaveDialogAndVerifyOutputAsync(browser, "将网页保存为 PDF", "SaveCurrentPageAsPdfAsync", uiPdfPath);
+        if (!File.Exists(uiPdfPath) || Encoding.ASCII.GetString(File.ReadAllBytes(uiPdfPath).Take(5).ToArray()) != "%PDF-")
+            throw new InvalidDataException("Confirming the standard PDF save dialog did not produce a valid PDF file.");
+        await SaveDialogAndVerifyOutputAsync(browser, "截图当前可见网页", "CaptureCurrentPageAsPngAsync", uiPngPath);
+        byte[] uiPngBytes = File.ReadAllBytes(uiPngPath);
+        if (uiPngBytes.Length < 8 || uiPngBytes[0] != 0x89 || uiPngBytes[1] != 0x50 || uiPngBytes[2] != 0x4E || uiPngBytes[3] != 0x47)
+            throw new InvalidDataException("Confirming the standard PNG save dialog did not produce a valid PNG file.");
+        try { File.Delete(uiPdfPath); } catch { }
+        try { File.Delete(uiPngPath); } catch { }
+
+        await CancelSaveDialogAndVerifyNoSideEffectAsync(browser, "截图当前可见网页", "CaptureCurrentPageAsPngAsync");
+        await CancelSaveDialogAndVerifyNoSideEffectAsync(browser, "将网页保存为 PDF", "SaveCurrentPageAsPdfAsync");
+        Console.WriteLine("PASS: standard save dialogs produce visible-page PDF/PNG files; canceling either dialog leaves state unchanged.");
+    }
+
+    private static async Task SaveDialogAndVerifyOutputAsync(BrowserForm browser, string title, string methodName, string outputPath)
+    {
+        var method = typeof(BrowserForm).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+        var statusField = typeof(BrowserForm).GetField("_statusLabel", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (method == null || statusField == null)
+            throw new InvalidOperationException("The save operation " + methodName + " was not found.");
+
+        bool dialogSeen = false;
+        var deadline = DateTime.UtcNow.AddSeconds(8);
+        using (var timer = new System.Windows.Forms.Timer { Interval = 100 })
+        {
+            timer.Tick += delegate
+            {
+                var handle = FindWindow("#32770", title);
+                if (handle != IntPtr.Zero)
+                {
+                    dialogSeen = true;
+                    timer.Stop();
+                    SetForegroundWindow(handle);
+                    SendKeys.SendWait("%n");
+                    SendKeys.SendWait("^a");
+                    SendKeys.SendWait(EscapeSendKeysLiteral(outputPath));
+                    SendKeys.SendWait("{ENTER}");
+                }
+                else if (DateTime.UtcNow >= deadline)
+                {
+                    timer.Stop();
+                    SendKeys.SendWait("{ESC}");
+                }
+            };
+            timer.Start();
+            var task = method.Invoke(browser, null) as Task;
+            if (task == null)
+                throw new InvalidOperationException(methodName + " did not return a Task.");
+            await task;
+            timer.Stop();
+        }
+
+        if (!dialogSeen)
+            throw new TimeoutException("Could not locate the standard save dialog titled '" + title + "'.");
+        var status = (Label)statusField.GetValue(browser);
+        if (!File.Exists(outputPath) || !status.Text.Contains(Path.GetFileName(outputPath)))
+            throw new InvalidOperationException("Confirming '" + title + "' did not save the requested file and update browser status.");
+    }
+
+    private static string EscapeSendKeysLiteral(string value)
+    {
+        var result = new StringBuilder(value.Length);
+        foreach (char character in value)
+        {
+            switch (character)
+            {
+                case '+': result.Append("{+}"); break;
+                case '^': result.Append("{^}"); break;
+                case '%': result.Append("{%}"); break;
+                case '~': result.Append("{~}"); break;
+                case '(': result.Append("{(}"); break;
+                case ')': result.Append("{)}"); break;
+                case '{': result.Append("{{}"); break;
+                case '}': result.Append("{}}"); break;
+                default: result.Append(character); break;
+            }
+        }
+        return result.ToString();
+    }
+
+    private static async Task CancelSaveDialogAndVerifyNoSideEffectAsync(BrowserForm browser, string title, string methodName)
+    {
+        var method = typeof(BrowserForm).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+        var statusField = typeof(BrowserForm).GetField("_statusLabel", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (method == null || statusField == null)
+            throw new InvalidOperationException("The save operation " + methodName + " was not found.");
+        var status = (Label)statusField.GetValue(browser);
+        string before = status.Text;
+        bool dialogSeen = false;
+        var deadline = DateTime.UtcNow.AddSeconds(8);
+        using (var timer = new System.Windows.Forms.Timer { Interval = 100 })
+        {
+            timer.Tick += delegate
+            {
+                var handle = FindWindow("#32770", title);
+                if (handle != IntPtr.Zero)
+                {
+                    dialogSeen = true;
+                    timer.Stop();
+                    SendMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                }
+                else if (DateTime.UtcNow >= deadline)
+                {
+                    timer.Stop();
+                    SendKeys.SendWait("{ESC}");
+                }
+            };
+            timer.Start();
+            var task = method.Invoke(browser, null) as Task;
+            if (task == null)
+                throw new InvalidOperationException(methodName + " did not return a Task.");
+            await task;
+            timer.Stop();
+        }
+        if (!dialogSeen)
+            throw new TimeoutException("Could not locate the standard save dialog titled '" + title + "'.");
+        if (!String.Equals(status.Text, before, StringComparison.Ordinal))
+            throw new InvalidOperationException("Canceling '" + title + "' changed browser status or state.");
+    }
+
+    private static async Task NavigateCoreAndWaitAsync(CoreWebView2 core, string targetUrl)
+    {
+        Uri expected;
+        if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out expected))
+            throw new InvalidOperationException("The test navigation URL is invalid: " + targetUrl);
+        var completion = new TaskCompletionSource<bool>();
+        ulong navigationId = 0;
+        EventHandler<CoreWebView2NavigationStartingEventArgs> starting = delegate(object sender, CoreWebView2NavigationStartingEventArgs args)
+        {
+            Uri current;
+            if (Uri.TryCreate(args.Uri, UriKind.Absolute, out current) &&
+                String.Equals(current.AbsoluteUri, expected.AbsoluteUri, StringComparison.OrdinalIgnoreCase))
+                navigationId = args.NavigationId;
+        };
+        EventHandler<CoreWebView2NavigationCompletedEventArgs> completed = delegate(object sender, CoreWebView2NavigationCompletedEventArgs args)
+        {
+            if (navigationId != 0 && args.NavigationId == navigationId)
+            {
+                if (args.IsSuccess)
+                    completion.TrySetResult(true);
+                else
+                    completion.TrySetException(new InvalidOperationException("Navigation failed for " + targetUrl + ": " + args.WebErrorStatus));
+            }
+        };
+        core.NavigationStarting += starting;
+        core.NavigationCompleted += completed;
+        try
+        {
+            core.Navigate(expected.AbsoluteUri);
+            var finished = await Task.WhenAny(completion.Task, Task.Delay(15000));
+            if (finished != completion.Task)
+                throw new TimeoutException("Timed out navigating to " + targetUrl + "; source=" + core.Source);
+            await completion.Task;
+            if (!String.Equals(core.Source, expected.AbsoluteUri, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The navigation source did not retain the expected URL: " + core.Source);
+        }
+        finally
+        {
+            core.NavigationStarting -= starting;
+            core.NavigationCompleted -= completed;
+        }
+    }
+
+    private static async Task NavigateHistoryAndWaitAsync(BrowserForm browser, CoreWebView2 core, string methodName, string targetUrl)
+    {
+        string expected = new Uri(targetUrl).AbsoluteUri;
+        var completion = new TaskCompletionSource<bool>();
+        EventHandler<CoreWebView2NavigationCompletedEventArgs> handler = delegate(object sender, CoreWebView2NavigationCompletedEventArgs args)
+        {
+            if (args.IsSuccess && String.Equals(core.Source, expected, StringComparison.OrdinalIgnoreCase))
+                completion.TrySetResult(true);
+        };
+        core.NavigationCompleted += handler;
+        try
+        {
+            var method = typeof(BrowserForm).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+            if (method == null)
+                throw new InvalidOperationException("BrowserForm." + methodName + " was not found.");
+            method.Invoke(browser, null);
+            var finished = await Task.WhenAny(completion.Task, Task.Delay(12000));
+            if (finished != completion.Task)
+                throw new TimeoutException(methodName + " did not reach " + expected + "; current source=" + core.Source);
+            await completion.Task;
+            if (!String.Equals(core.Source, expected, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(methodName + " reached an unexpected URL: " + core.Source);
+        }
+        finally { core.NavigationCompleted -= handler; }
+    }
+
+    private static object GetActiveTab(BrowserForm browser)
+    {
+        var field = typeof(BrowserForm).GetField("_activeTab", BindingFlags.Instance | BindingFlags.NonPublic);
+        var tab = field == null ? null : field.GetValue(browser);
+        if (tab == null)
+            throw new InvalidOperationException("BrowserForm has no active tab.");
+        return tab;
+    }
+
+    private static object GetWebViewForTab(object tab)
+    {
+        var field = tab.GetType().GetProperty("WebView", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        var view = field == null ? null : field.GetValue(tab, null);
+        if (view == null)
+            throw new InvalidOperationException("The requested browser tab has no WebView2 control.");
+        return view;
+    }
+
+    private static CoreWebView2 GetCoreForTab(object tab)
+    {
+        var view = GetWebViewForTab(tab) as WebView2;
+        if (view == null || view.CoreWebView2 == null)
+            throw new InvalidOperationException("The requested browser tab's WebView2 core is not initialized.");
+        return view.CoreWebView2;
+    }
+
+    private static void SwitchToTab(BrowserForm browser, object tab)
+    {
+        var method = typeof(BrowserForm).GetMethod("SwitchToTab", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (method == null)
+            throw new InvalidOperationException("BrowserForm.SwitchToTab was not found.");
+        method.Invoke(browser, new[] { tab });
+    }
+
+    private static async Task CaptureRunningBrowserScreenshotAsync(BrowserForm browser)
+    {
+        var showHome = typeof(BrowserForm).GetMethod("ShowHomeView", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (showHome == null)
+            throw new InvalidOperationException("The browser home view was not found for the running-app screenshot.");
+        showHome.Invoke(browser, null);
+        if (!browser.Visible)
+            browser.Show();
+        browser.Activate();
+        await Task.Delay(500);
+        Application.DoEvents();
+
+        var screenBounds = browser.RectangleToScreen(browser.ClientRectangle);
+        if (screenBounds.Width <= 0 || screenBounds.Height <= 0)
+            throw new InvalidOperationException("The browser window has no visible client area for screenshot capture.");
+        using (var bitmap = new Bitmap(screenBounds.Width, screenBounds.Height))
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.CopyFromScreen(screenBounds.Location, Point.Empty, screenBounds.Size);
+            string workspace = Environment.GetEnvironmentVariable("GITHUB_WORKSPACE");
+            if (String.IsNullOrWhiteSpace(workspace))
+                workspace = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", ".."));
+            string outputDirectory = Path.Combine(workspace, "test-artifacts");
+            Directory.CreateDirectory(outputDirectory);
+            string outputPath = Path.Combine(outputDirectory, "CHENMU-Browser-v1.5.0-running-app.png");
+            bitmap.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
+            Console.WriteLine("RUNNING_APP_SCREENSHOT=" + outputPath);
+        }
     }
 
     private static async Task TestBackgroundResumeAsync(BrowserForm browser)
@@ -599,6 +1073,64 @@ internal static class WindowsWebView2SmokeTests
         public CoreWebView2PermissionState State { get; set; }
         public bool Handled { get; set; }
         public bool SavesInProfile { get; set; }
+    }
+
+    private sealed class LocalHttpTestServer : IDisposable
+    {
+        private readonly TcpListener _listener;
+        private readonly Task _serveTask;
+        private volatile bool _stopping;
+
+        public string Url { get; private set; }
+
+        public LocalHttpTestServer()
+        {
+            _listener = new TcpListener(IPAddress.Loopback, 0);
+            _listener.Start();
+            var endpoint = (IPEndPoint)_listener.LocalEndpoint;
+            Url = "http://127.0.0.1:" + endpoint.Port.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/";
+            _serveTask = Task.Run((Func<Task>)ServeAsync);
+        }
+
+        private async Task ServeAsync()
+        {
+            while (!_stopping)
+            {
+                TcpClient client = null;
+                try
+                {
+                    client = await _listener.AcceptTcpClientAsync();
+                    using (client)
+                    using (var stream = client.GetStream())
+                    {
+                        var request = new byte[4096];
+                        await stream.ReadAsync(request, 0, request.Length);
+                        byte[] body = Encoding.UTF8.GetBytes(
+                            "<!doctype html><html><head><meta charset=\"utf-8\"><title>history-smoke</title></head>" +
+                            "<body><h1>History smoke page</h1><p>needle appears here</p><p>needle appears again</p></body></html>");
+                        byte[] header = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n" +
+                            "Content-Length: " + body.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                            "\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n");
+                        await stream.WriteAsync(header, 0, header.Length);
+                        await stream.WriteAsync(body, 0, body.Length);
+                    }
+                }
+                catch (ObjectDisposedException) { if (_stopping) break; }
+                catch (SocketException) { if (_stopping) break; }
+                catch (IOException) { }
+                catch (Exception ex) { if (!_stopping) Console.Error.WriteLine("[LocalHttpTestServer] " + ex); }
+                finally { if (client != null) client.Close(); }
+            }
+        }
+
+        public void Dispose()
+        {
+            _stopping = true;
+            try { _listener.Stop(); }
+            catch { }
+            try { _serveTask.Wait(1000); }
+            catch { }
+        }
     }
 
     private sealed class LocalTestServer : IDisposable

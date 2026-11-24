@@ -128,6 +128,7 @@ namespace ChenmuBrowser
             Activated += delegate { ApplyWindowCaptionColors(); };
             BuildInterface();
             InitializeV11Features();
+            InitializeV15Features();
 #if DEBUG
             if (_isIsolatedTest)
                 InitializeVisualTestTabs(initialTestTabs);
@@ -350,14 +351,18 @@ namespace ChenmuBrowser
                 chrome.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42F));
             chrome.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
-            chrome.Controls.Add(CreateChromeButton("←", "后退（Alt+←）", delegate
+            _backButton = CreateChromeButton("←", "后退（Alt+←）", delegate
             {
                 GoBack();
-            }), 0, 0);
-            chrome.Controls.Add(CreateChromeButton("→", "前进（Alt+→）", delegate
+            });
+            _backButton.Enabled = false;
+            chrome.Controls.Add(_backButton, 0, 0);
+            _forwardButton = CreateChromeButton("→", "前进（Alt+→）", delegate
             {
                 GoForward();
-            }), 1, 0);
+            });
+            _forwardButton.Enabled = false;
+            chrome.Controls.Add(_forwardButton, 1, 0);
             chrome.Controls.Add(CreateChromeButton("↻", "刷新页面（Ctrl+R）", delegate
             {
                 ReloadCurrentPage();
@@ -434,6 +439,7 @@ namespace ChenmuBrowser
             chrome.Controls.Add(CreateChromeButton("▤", "查看书签", ShowBookmarksDialog), 6, 0);
 
             var settingsMenu = new ContextMenuStrip();
+            _settingsMenu = settingsMenu;
             var searchMenu = new ToolStripMenuItem("默认搜索引擎");
             searchMenu.DropDownItems.Add("Google", null, delegate { SetSearchEngine("google"); });
             searchMenu.DropDownItems.Add("Bing", null, delegate { SetSearchEngine("bing"); });
@@ -781,6 +787,10 @@ namespace ChenmuBrowser
             if (index < 0)
                 return;
             var wasActive = tab == _activeTab;
+            var closedUrl = tab.WebView != null && tab.WebView.CoreWebView2 != null
+                ? tab.WebView.CoreWebView2.Source
+                : tab.SessionUrl;
+            _recentlyClosedTabs.Record(closedUrl, tab.Title, tab.ZoomFactor, tab.IsPrivate, tab.IsReader);
             _tabs.RemoveAt(index);
             _tabHeaders.Controls.Remove(tab.Header);
             UpdateTabSidebar();
@@ -863,6 +873,7 @@ namespace ChenmuBrowser
             }
             UpdateTabHeaders();
             EnsureTabVisible(tab);
+            UpdateNavigationControls();
             SaveSessionSnapshot();
         }
 
@@ -994,6 +1005,31 @@ namespace ChenmuBrowser
             if (keyData == (Keys.Control | Keys.L))
             {
                 FocusAddress();
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.F))
+            {
+                ShowFindBar();
+                return true;
+            }
+            if (keyData == (Keys.Control | Keys.Shift | Keys.T))
+            {
+                RestoreMostRecentlyClosedTab();
+                return true;
+            }
+            if (IsZoomInShortcut(keyData))
+            {
+                AdjustActiveTabZoom(1);
+                return true;
+            }
+            if (IsZoomOutShortcut(keyData))
+            {
+                AdjustActiveTabZoom(-1);
+                return true;
+            }
+            if (IsZoomResetShortcut(keyData))
+            {
+                SetActiveTabZoom(BrowserZoomPolicy.Default);
                 return true;
             }
             if (keyData == (Keys.Control | Keys.O) && _activeTab != null &&
@@ -1157,18 +1193,22 @@ namespace ChenmuBrowser
 
         private void GoBack()
         {
-            if (_webView != null && _webView.CoreWebView2 != null && _webView.CoreWebView2.CanGoBack)
+            var core = _activeTab == null || _activeTab.WebView == null ? null : _activeTab.WebView.CoreWebView2;
+            if (core != null && core.CanGoBack)
             {
-                _webView.CoreWebView2.GoBack();
+                core.GoBack();
             }
+            UpdateNavigationControls();
         }
 
         private void GoForward()
         {
-            if (_webView != null && _webView.CoreWebView2 != null && _webView.CoreWebView2.CanGoForward)
+            var core = _activeTab == null || _activeTab.WebView == null ? null : _activeTab.WebView.CoreWebView2;
+            if (core != null && core.CanGoForward)
             {
-                _webView.CoreWebView2.GoForward();
+                core.GoForward();
             }
+            UpdateNavigationControls();
         }
 
         private void ReloadCurrentPage()
@@ -1605,7 +1645,7 @@ namespace ChenmuBrowser
 
         private async void SearchFromHome()
         {
-            await NavigateAsync(_homeSearchBox.Text);
+            await NavigateAsync(_homeSearchBox.Text, true);
         }
 
         private static string GetHomeGreeting()
@@ -1637,18 +1677,19 @@ namespace ChenmuBrowser
 
         private async void NavigateFromAddress()
         {
-            await NavigateAsync(_addressBox.Text);
+            await NavigateAsync(_addressBox.Text, true);
         }
 
-        private string NormalizeAddress(string text)
+        private string NormalizeAddress(string text, bool upgradeHttp = false)
         {
             var value = (text ?? String.Empty).Trim();
             if (value.Length == 0)
                 return null;
 
-            if (value.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
-                value.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            if (value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 return value;
+            if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+                return upgradeHttp ? "https://" + value.Substring("http://".Length) : value;
 
             if (!value.Any(Char.IsWhiteSpace) && value.Contains("."))
                 return "https://" + value;
@@ -1661,9 +1702,9 @@ namespace ChenmuBrowser
             return searchUrl + Uri.EscapeDataString(value);
         }
 
-        private async Task NavigateAsync(string input)
+        private async Task NavigateAsync(string input, bool upgradeHttp = false)
         {
-            var target = NormalizeAddress(input);
+            var target = NormalizeAddress(input, upgradeHttp);
             if (String.IsNullOrWhiteSpace(target))
                 return;
 
@@ -1771,12 +1812,9 @@ namespace ChenmuBrowser
             {
                 Directory.CreateDirectory(_dataRoot);
                 var userDataFolder = Path.Combine(_dataRoot, "WebView2");
-                CoreWebView2EnvironmentOptions options = _isIsolatedTest
-                    ? new CoreWebView2EnvironmentOptions
-                    {
-                        AdditionalBrowserArguments = "--ignore-certificate-errors --use-fake-device-for-media-stream"
-                    }
-                    : null;
+                var options = new CoreWebView2EnvironmentOptions { AreBrowserExtensionsEnabled = true };
+                if (_isIsolatedTest)
+                    options.AdditionalBrowserArguments = "--ignore-certificate-errors --use-fake-device-for-media-stream";
                 _webViewEnvironmentTask = CoreWebView2Environment.CreateAsync(null, userDataFolder, options);
             }
             try
@@ -1796,7 +1834,9 @@ namespace ChenmuBrowser
             core.Settings.IsPasswordAutosaveEnabled = false;
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.AreDefaultContextMenusEnabled = true;
+            core.Settings.IsZoomControlEnabled = false;
             core.Profile.PreferredTrackingPreventionLevel = CoreWebView2TrackingPreventionLevel.Balanced;
+            ApplyTabZoom(core);
             RegisterPageAnimationScript(core);
             core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             core.WebResourceRequested += Core_WebResourceRequested;
@@ -1807,7 +1847,9 @@ namespace ChenmuBrowser
             {
                 if (IsActiveCore(core) && core.Source != null)
                     _addressBox.Text = core.Source;
+                UpdateNavigationControls(core);
             };
+            core.HistoryChanged += delegate { UpdateNavigationControls(core); };
             core.NavigationCompleted += delegate(object sender, CoreWebView2NavigationCompletedEventArgs e)
             {
                 if (IsActiveCore(core))
@@ -1823,6 +1865,7 @@ namespace ChenmuBrowser
                     }
                 }
                 UpdateWindowTitle(core);
+                UpdateNavigationControls(core);
             };
             core.DocumentTitleChanged += delegate { UpdateWindowTitle(core); };
             core.NewWindowRequested += delegate(object sender, CoreWebView2NewWindowRequestedEventArgs e)
@@ -1985,26 +2028,13 @@ namespace ChenmuBrowser
             if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out uri))
                 return;
 
-            if (String.Equals(uri.Scheme, "http", StringComparison.OrdinalIgnoreCase))
+            // Do not cancel and re-Navigate HTTP history entries here. That creates a new
+            // history item and can destroy the forward stack during back/forward traversal.
+            // Address-bar HTTP input is upgraded in NormalizeAddress; existing page history
+            // is allowed to complete with its original URL.
+            if (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == "about")
             {
-                e.Cancel = true;
-                var secureUrl = "https:" + e.Uri.Substring("http:".Length);
-                var ownerTab = FindTabForCore(core);
-                if (ownerTab != null)
-                {
-                    ownerTab.SessionUrl = GetSessionUrl(secureUrl);
-                    SaveSessionSnapshot();
-                }
-                if (IsActiveCore(core))
-                    _addressBox.Text = secureUrl;
-                if (core != null)
-                    core.Navigate(secureUrl);
-                return;
-            }
-
-            if (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == "about")
-            {
-                if (uri.Scheme == Uri.UriSchemeHttps)
+                if (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
                 {
                     var ownerTab = FindTabForCore(core);
                     if (ownerTab != null)
@@ -3264,6 +3294,7 @@ namespace ChenmuBrowser
             public ReaderView ReaderView { get; set; }
             public bool IsReader { get; set; }
             public Task InitializationTask { get; set; }
+            public double ZoomFactor { get; set; } = BrowserZoomPolicy.Default;
         }
 
         private sealed class DownloadEntry

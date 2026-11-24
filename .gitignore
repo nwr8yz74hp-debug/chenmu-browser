@@ -4,6 +4,7 @@ dist/
 dist-rid/
 dist-check*/
 dist-update-check/
+test-artifacts/
 *.user
 *.suo
 .vs/
