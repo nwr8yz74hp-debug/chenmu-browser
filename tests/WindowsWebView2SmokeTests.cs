@@ -109,17 +109,14 @@ internal static class WindowsWebView2SmokeTests
 
     private static async Task TestDefaultDenyPermissionsAsync(BrowserForm browser, LocalTestServer server)
     {
-        var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
-        if (navigate == null)
-            throw new InvalidOperationException("BrowserForm.NavigateAsync was not found.");
-        await (Task)navigate.Invoke(browser, new object[] { server.Url });
+        await EnsureBrowserWebViewAsync(browser);
 
         var webViewField = typeof(BrowserForm).GetField("_webView", BindingFlags.Instance | BindingFlags.NonPublic);
         var webView = webViewField == null ? null : webViewField.GetValue(browser) as WebView2;
         if (webView == null || webView.CoreWebView2 == null)
             throw new InvalidOperationException("The browser WebView2 control did not initialize.");
         var core = webView.CoreWebView2;
-        await NavigateAndWaitAsync(core, server.Url);
+        await NavigateAndWaitAsync(browser, core, server.Url);
         string pageCapabilities = await core.ExecuteScriptAsync("JSON.stringify({origin:location.origin,secure:window.isSecureContext,media:!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia),geolocation:!!navigator.geolocation,notifications:!!window.Notification})");
         Console.WriteLine("Permission test page: " + pageCapabilities);
         var seen = new Dictionary<CoreWebView2PermissionKind, ObservedPermission>();
@@ -251,11 +248,20 @@ internal static class WindowsWebView2SmokeTests
     {
         string target = new Uri(Path.GetFullPath(path)).AbsoluteUri;
         var completion = new TaskCompletionSource<bool>();
+        ulong targetNavigationId = 0;
+        string lastNavigation = "none";
+        string lastCompletion = "none";
+        EventHandler<CoreWebView2NavigationStartingEventArgs> startingHandler = delegate(object sender, CoreWebView2NavigationStartingEventArgs args)
+        {
+            lastNavigation = args.Uri + " (id " + args.NavigationId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")";
+            if (String.Equals(args.Uri, target, StringComparison.OrdinalIgnoreCase))
+                targetNavigationId = args.NavigationId;
+        };
         EventHandler<CoreWebView2NavigationCompletedEventArgs> handler = delegate(object sender, CoreWebView2NavigationCompletedEventArgs args)
         {
-            Uri current;
-            if (Uri.TryCreate(core.Source, UriKind.Absolute, out current) &&
-                String.Equals(current.AbsoluteUri, target, StringComparison.OrdinalIgnoreCase))
+            lastCompletion = "id " + args.NavigationId.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ", success=" + args.IsSuccess.ToString() + ", error=" + args.WebErrorStatus.ToString();
+            if (targetNavigationId != 0 && args.NavigationId == targetNavigationId)
             {
                 if (args.IsSuccess)
                     completion.TrySetResult(true);
@@ -263,6 +269,7 @@ internal static class WindowsWebView2SmokeTests
                     completion.TrySetException(new InvalidOperationException("Reader could not load test document " + path + ": " + args.WebErrorStatus));
             }
         };
+        core.NavigationStarting += startingHandler;
         core.NavigationCompleted += handler;
         try
         {
@@ -272,11 +279,17 @@ internal static class WindowsWebView2SmokeTests
             await (Task)method.Invoke(reader, new object[] { path });
             var finished = await Task.WhenAny(completion.Task, Task.Delay(20000));
             if (finished != completion.Task)
-                throw new TimeoutException("Timed out waiting for Reader to navigate to " + path);
+                throw new TimeoutException("Timed out waiting for Reader to navigate to " + path +
+                    ". Current source: " + core.Source + "; last navigation: " + lastNavigation +
+                    "; last completion: " + lastCompletion);
             await completion.Task;
             await Task.Delay(900);
         }
-        finally { core.NavigationCompleted -= handler; }
+        finally
+        {
+            core.NavigationStarting -= startingHandler;
+            core.NavigationCompleted -= handler;
+        }
     }
 
     private static void AssertBlocked(Dictionary<string, int> statuses, string path, string description)
@@ -306,17 +319,40 @@ internal static class WindowsWebView2SmokeTests
         throw new TimeoutException("Timed out waiting for WebView2 initialization.");
     }
 
-    private static async Task NavigateAndWaitAsync(CoreWebView2 core, string targetUrl)
+    private static async Task EnsureBrowserWebViewAsync(BrowserForm browser)
+    {
+        var activeTabField = typeof(BrowserForm).GetField("_activeTab", BindingFlags.Instance | BindingFlags.NonPublic);
+        var ensure = typeof(BrowserForm).GetMethod("EnsureWebViewAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (activeTabField == null || ensure == null)
+            throw new InvalidOperationException("BrowserForm WebView initialization methods were not found.");
+        var activeTab = activeTabField.GetValue(browser);
+        if (activeTab == null)
+            throw new InvalidOperationException("BrowserForm has no active test tab.");
+        await (Task)ensure.Invoke(browser, new[] { activeTab });
+    }
+
+    private static async Task NavigateAndWaitAsync(BrowserForm browser, CoreWebView2 core, string targetUrl)
     {
         Uri expected;
         if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out expected))
             throw new InvalidOperationException("The permission test server URL is invalid.");
         var completion = new TaskCompletionSource<bool>();
+        ulong targetNavigationId = 0;
+        string lastNavigation = "none";
+        string lastCompletion = "none";
+        EventHandler<CoreWebView2NavigationStartingEventArgs> startingHandler = delegate(object sender, CoreWebView2NavigationStartingEventArgs args)
+        {
+            lastNavigation = args.Uri + " (id " + args.NavigationId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")";
+            Uri requested;
+            if (Uri.TryCreate(args.Uri, UriKind.Absolute, out requested) &&
+                String.Equals(requested.AbsoluteUri, expected.AbsoluteUri, StringComparison.OrdinalIgnoreCase))
+                targetNavigationId = args.NavigationId;
+        };
         EventHandler<CoreWebView2NavigationCompletedEventArgs> handler = delegate(object sender, CoreWebView2NavigationCompletedEventArgs args)
         {
-            Uri current;
-            if (Uri.TryCreate(core.Source, UriKind.Absolute, out current) &&
-                String.Equals(current.AbsoluteUri, expected.AbsoluteUri, StringComparison.OrdinalIgnoreCase))
+            lastCompletion = "id " + args.NavigationId.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ", success=" + args.IsSuccess.ToString() + ", error=" + args.WebErrorStatus.ToString();
+            if (targetNavigationId != 0 && args.NavigationId == targetNavigationId)
             {
                 if (args.IsSuccess)
                     completion.TrySetResult(true);
@@ -324,16 +360,25 @@ internal static class WindowsWebView2SmokeTests
                     completion.TrySetException(new InvalidOperationException("Permission test page navigation failed: " + args.WebErrorStatus));
             }
         };
+        core.NavigationStarting += startingHandler;
         core.NavigationCompleted += handler;
         try
         {
-            core.Navigate(expected.AbsoluteUri);
+            var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (navigate == null)
+                throw new InvalidOperationException("BrowserForm.NavigateAsync was not found.");
+            await (Task)navigate.Invoke(browser, new object[] { expected.AbsoluteUri });
             var finished = await Task.WhenAny(completion.Task, Task.Delay(20000));
             if (finished != completion.Task)
-                throw new TimeoutException("Timed out waiting for the permission test page. Current source: " + core.Source);
+                throw new TimeoutException("Timed out waiting for the permission test page. Current source: " + core.Source +
+                    "; last navigation: " + lastNavigation + "; last completion: " + lastCompletion);
             await completion.Task;
         }
-        finally { core.NavigationCompleted -= handler; }
+        finally
+        {
+            core.NavigationStarting -= startingHandler;
+            core.NavigationCompleted -= handler;
+        }
     }
 
     private static string ToFileUri(string path)
