@@ -35,7 +35,7 @@ internal static class WindowsWebView2SmokeTests
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindow(IntPtr handle);
+    private static extern bool IsWindowVisible(IntPtr handle);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -174,14 +174,14 @@ internal static class WindowsWebView2SmokeTests
                     else
                     {
                         SendMessage(okButton, 0x00F5, IntPtr.Zero, IntPtr.Zero);
-                        if (!IsWindow(dialog))
+                        if (!IsWindowVisible(dialog))
                             Console.WriteLine("PASS: synchronously clicked the update notice OK button.");
                     }
-                    if (IsWindow(dialog))
+                    if (IsWindowVisible(dialog))
                         SendMessage(dialog, 0x0111, new IntPtr(1), IntPtr.Zero);
-                    if (IsWindow(dialog))
+                    if (IsWindowVisible(dialog))
                         SendMessage(dialog, 0x0010, IntPtr.Zero, IntPtr.Zero);
-                    if (IsWindow(dialog))
+                    if (IsWindowVisible(dialog))
                         Console.Error.WriteLine("Update notice dialog remained open after BM_CLICK, IDOK, and WM_CLOSE.");
                 }
                 return;
@@ -405,12 +405,17 @@ internal static class WindowsWebView2SmokeTests
         if (view == null || !browser.Visible)
             throw new InvalidOperationException("Cannot send a keyboard shortcut because the active WebView is not visible.");
         browser.Activate();
+        browser.BringToFront();
         SetForegroundWindow(browser.Handle);
-        if (!view.Focus())
-            throw new InvalidOperationException("Could not focus the active WebView before sending " + sequence + ".");
+        Application.DoEvents();
+        view.BringToFront();
+        view.Select();
+        view.Focus();
         Application.DoEvents();
         if (!view.ContainsFocus)
-            throw new InvalidOperationException("The active WebView did not retain keyboard focus before sending " + sequence + ".");
+            throw new InvalidOperationException("The active WebView did not retain keyboard focus before sending " + sequence +
+                "; visible=" + view.Visible + ", enabled=" + view.Enabled + ", canFocus=" + view.CanFocus +
+                ", browserActive=" + browser.ContainsFocus + ".");
         SendKeys.SendWait(sequence);
         Application.DoEvents();
     }
