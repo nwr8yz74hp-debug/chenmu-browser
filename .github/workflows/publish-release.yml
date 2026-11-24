@@ -39,6 +39,10 @@ jobs:
         shell: pwsh
         run: dotnet run --project tests/BrowserLogicTests.csproj -c Release
 
+      - name: Run Windows home wallpaper visual tests
+        shell: pwsh
+        run: dotnet run --project tests/HomeVisualSmokeTests.csproj -c Release
+
       # The v1.4.0 owner-test release and the v1.4.1 wallpaper-only bugfix may ship
       # while these independent Windows-only security checks remain unverified.
       # Keep the step and its outcome visible; other release tags remain blocked.
