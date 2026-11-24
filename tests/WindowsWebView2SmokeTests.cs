@@ -340,9 +340,11 @@ internal static class WindowsWebView2SmokeTests
         ulong targetNavigationId = 0;
         string lastNavigation = "none";
         string lastCompletion = "none";
+        Console.WriteLine("[PermissionNav] WebView2 runtime: " + core.Environment.BrowserVersionString);
         EventHandler<CoreWebView2NavigationStartingEventArgs> startingHandler = delegate(object sender, CoreWebView2NavigationStartingEventArgs args)
         {
             lastNavigation = args.Uri + " (id " + args.NavigationId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")";
+            Console.WriteLine("[PermissionNav] NavigationStarting: " + lastNavigation + "; redirected=" + args.IsRedirected + "; canceled=" + args.Cancel);
             Uri requested;
             if (Uri.TryCreate(args.Uri, UriKind.Absolute, out requested) &&
                 String.Equals(requested.AbsoluteUri, expected.AbsoluteUri, StringComparison.OrdinalIgnoreCase))
@@ -352,6 +354,7 @@ internal static class WindowsWebView2SmokeTests
         {
             lastCompletion = "id " + args.NavigationId.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                 ", success=" + args.IsSuccess.ToString() + ", error=" + args.WebErrorStatus.ToString();
+            Console.WriteLine("[PermissionNav] NavigationCompleted: " + lastCompletion + "; source=" + core.Source);
             if (targetNavigationId != 0 && args.NavigationId == targetNavigationId)
             {
                 if (args.IsSuccess)
@@ -360,8 +363,18 @@ internal static class WindowsWebView2SmokeTests
                     completion.TrySetException(new InvalidOperationException("Permission test page navigation failed: " + args.WebErrorStatus));
             }
         };
+        EventHandler<CoreWebView2ServerCertificateErrorDetectedEventArgs> certificateErrorHandler = delegate(object sender, CoreWebView2ServerCertificateErrorDetectedEventArgs args)
+        {
+            Console.Error.WriteLine("[PermissionNav] Server certificate error: request=" + args.RequestUri + "; status=" + args.ErrorStatus + "; action=" + args.Action);
+        };
+        EventHandler<CoreWebView2SourceChangedEventArgs> sourceChangedHandler = delegate
+        {
+            Console.WriteLine("[PermissionNav] SourceChanged: " + core.Source);
+        };
         core.NavigationStarting += startingHandler;
         core.NavigationCompleted += handler;
+        core.ServerCertificateErrorDetected += certificateErrorHandler;
+        core.SourceChanged += sourceChangedHandler;
         try
         {
             var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -378,6 +391,8 @@ internal static class WindowsWebView2SmokeTests
         {
             core.NavigationStarting -= startingHandler;
             core.NavigationCompleted -= handler;
+            core.ServerCertificateErrorDetected -= certificateErrorHandler;
+            core.SourceChanged -= sourceChangedHandler;
         }
     }
 
@@ -434,38 +449,62 @@ internal static class WindowsWebView2SmokeTests
             _listener.Start();
             var endpoint = (IPEndPoint)_listener.LocalEndpoint;
             Url = "https://127.0.0.1:" + endpoint.Port.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/";
+            Console.WriteLine("[LocalTestServer] Listening at " + Url + "; certificate=" + _certificate.Subject +
+                "; thumbprint=" + _certificate.Thumbprint + "; valid=" + _certificate.NotBefore.ToUniversalTime().ToString("O") +
+                ".." + _certificate.NotAfter.ToUniversalTime().ToString("O"));
             _serveTask = Task.Run((Func<Task>)ServeAsync);
         }
 
         private async Task ServeAsync()
         {
+            Console.WriteLine("[LocalTestServer] Accept loop started.");
             while (!_stopping)
             {
                 TcpClient client = null;
+                string stage = "accept";
                 try
                 {
                     client = await _listener.AcceptTcpClientAsync();
+                    Console.WriteLine("[LocalTestServer] Accepted " + client.Client.RemoteEndPoint + "; starting TLS handshake.");
                     using (client)
                     using (var stream = new SslStream(client.GetStream(), false))
                     {
+                        stage = "TLS handshake";
                         await stream.AuthenticateAsServerAsync(_certificate, false, SslProtocols.Tls12, false);
+                        Console.WriteLine("[LocalTestServer] TLS handshake completed: " + stream.SslProtocol + "; reading HTTP request.");
+                        stage = "HTTP request read";
                         var request = new byte[2048];
-                        try { await stream.ReadAsync(request, 0, request.Length); }
-                        catch { }
+                        int requestLength = await stream.ReadAsync(request, 0, request.Length);
+                        string requestLine = requestLength == 0 ? "<connection closed without request>" :
+                            Encoding.ASCII.GetString(request, 0, requestLength).Split(new[] { "\r\n" }, StringSplitOptions.None)[0];
+                        Console.WriteLine("[LocalTestServer] Received " + requestLength.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                            " request bytes: " + requestLine);
                         string header = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n" +
                             "Content-Length: " + _responseBody.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                             "\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n";
                         var headerBytes = Encoding.ASCII.GetBytes(header);
+                        stage = "HTTP response write";
                         await stream.WriteAsync(headerBytes, 0, headerBytes.Length);
                         await stream.WriteAsync(_responseBody, 0, _responseBody.Length);
+                        Console.WriteLine("[LocalTestServer] Sent HTTP 200 response.");
                     }
                 }
-                catch (ObjectDisposedException) { break; }
-                catch (SocketException) { if (_stopping) break; }
-                catch (AuthenticationException) { }
-                catch (IOException) { }
+                catch (ObjectDisposedException ex)
+                {
+                    if (!_stopping) Console.Error.WriteLine("[LocalTestServer] " + stage + " failed: " + ex);
+                    break;
+                }
+                catch (SocketException ex)
+                {
+                    if (!_stopping) Console.Error.WriteLine("[LocalTestServer] " + stage + " failed: " + ex);
+                    if (_stopping) break;
+                }
+                catch (AuthenticationException ex) { Console.Error.WriteLine("[LocalTestServer] " + stage + " failed: " + ex); }
+                catch (IOException ex) { Console.Error.WriteLine("[LocalTestServer] " + stage + " failed: " + ex); }
+                catch (Exception ex) { Console.Error.WriteLine("[LocalTestServer] " + stage + " failed: " + ex); }
                 finally { if (client != null) client.Close(); }
             }
+            Console.WriteLine("[LocalTestServer] Accept loop stopped.");
         }
 
         public void Dispose()
