@@ -211,9 +211,9 @@ internal static class WindowsWebView2SmokeTests
             string a = server.Url + "a";
             string b = server.Url + "b";
             string c = server.Url + "c";
-            await NavigateCoreAndWaitAsync(firstCore, a);
-            await NavigateCoreAndWaitAsync(firstCore, b);
-            await NavigateCoreAndWaitAsync(firstCore, c);
+            await NavigateCoreAndWaitAsync(browser, firstCore, a);
+            await NavigateCoreAndWaitAsync(browser, firstCore, b);
+            await NavigateCoreAndWaitAsync(browser, firstCore, c);
             if (!String.Equals(firstCore.Source, new Uri(c).AbsoluteUri, StringComparison.OrdinalIgnoreCase) || !firstCore.CanGoBack)
                 throw new InvalidOperationException("The A→B→C HTTP navigation sequence did not create a back history entry.");
 
@@ -234,8 +234,8 @@ internal static class WindowsWebView2SmokeTests
             var secondCore = GetCoreForTab(secondTab);
             string secondA = server.Url + "second-a";
             string secondB = server.Url + "second-b";
-            await NavigateCoreAndWaitAsync(secondCore, secondA);
-            await NavigateCoreAndWaitAsync(secondCore, secondB);
+            await NavigateCoreAndWaitAsync(browser, secondCore, secondA);
+            await NavigateCoreAndWaitAsync(browser, secondCore, secondB);
 
             SwitchToTab(browser, firstTab);
             await NavigateHistoryAndWaitAsync(browser, firstCore, "GoBack", b);
@@ -256,7 +256,7 @@ internal static class WindowsWebView2SmokeTests
             await EnsureBrowserWebViewAsync(browser);
             var core = GetCoreForTab(GetActiveTab(browser));
             string findUrl = server.Url + "find-page";
-            await NavigateCoreAndWaitAsync(core, findUrl);
+            await NavigateCoreAndWaitAsync(browser, core, findUrl);
 
             var showFind = typeof(BrowserForm).GetMethod("ShowFindBar", BindingFlags.Instance | BindingFlags.NonPublic);
             var findTextField = typeof(BrowserForm).GetField("_findTextBox", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -308,7 +308,7 @@ internal static class WindowsWebView2SmokeTests
             var privateTab = GetActiveTab(browser);
             typeof(BrowserForm).GetNestedType("BrowserTab", BindingFlags.NonPublic)
                 .GetProperty("IsPrivate").SetValue(privateTab, true, null);
-            await NavigateCoreAndWaitAsync(GetCoreForTab(privateTab), server.Url + "private-tab");
+            await NavigateCoreAndWaitAsync(browser, GetCoreForTab(privateTab), server.Url + "private-tab");
             closeTab.Invoke(browser, new[] { privateTab });
             if ((int)countProperty.GetValue(recent, null) != before)
                 throw new InvalidOperationException("A private tab was added to recently closed history.");
@@ -316,7 +316,7 @@ internal static class WindowsWebView2SmokeTests
             createTab.Invoke(browser, null);
             await EnsureBrowserWebViewAsync(browser);
             var readerMarkedTab = GetActiveTab(browser);
-            await NavigateCoreAndWaitAsync(GetCoreForTab(readerMarkedTab), server.Url + "reader-marked");
+            await NavigateCoreAndWaitAsync(browser, GetCoreForTab(readerMarkedTab), server.Url + "reader-marked");
             typeof(BrowserForm).GetNestedType("BrowserTab", BindingFlags.NonPublic)
                 .GetProperty("IsReader").SetValue(readerMarkedTab, true, null);
             closeTab.Invoke(browser, new[] { readerMarkedTab });
@@ -327,7 +327,7 @@ internal static class WindowsWebView2SmokeTests
             createTab.Invoke(browser, null);
             await EnsureBrowserWebViewAsync(browser);
             var ordinaryTab = GetActiveTab(browser);
-            await NavigateCoreAndWaitAsync(GetCoreForTab(ordinaryTab), closedUrl);
+            await NavigateCoreAndWaitAsync(browser, GetCoreForTab(ordinaryTab), closedUrl);
             setZoom.Invoke(browser, new object[] { 1.3 });
             closeTab.Invoke(browser, new[] { ordinaryTab });
             var items = recent.GetType().GetMethod("GetItems").Invoke(recent, null) as System.Collections.IList;
@@ -344,7 +344,9 @@ internal static class WindowsWebView2SmokeTests
             await WaitUntilAsync(() =>
             {
                 var active = GetActiveTab(browser);
-                var restoredCore = GetCoreForTab(active);
+                var webViewProperty = active.GetType().GetProperty("WebView", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var view = webViewProperty == null ? null : webViewProperty.GetValue(active, null) as WebView2;
+                var restoredCore = view == null ? null : view.CoreWebView2;
                 return restoredCore != null && String.Equals(restoredCore.Source, new Uri(closedUrl).AbsoluteUri, StringComparison.OrdinalIgnoreCase);
             }, 15000);
             var restoredTab = GetActiveTab(browser);
@@ -531,7 +533,7 @@ internal static class WindowsWebView2SmokeTests
             throw new InvalidOperationException("Canceling '" + title + "' changed browser status or state.");
     }
 
-    private static async Task NavigateCoreAndWaitAsync(CoreWebView2 core, string targetUrl)
+    private static async Task NavigateCoreAndWaitAsync(BrowserForm browser, CoreWebView2 core, string targetUrl)
     {
         Uri expected;
         if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out expected))
@@ -559,7 +561,12 @@ internal static class WindowsWebView2SmokeTests
         core.NavigationCompleted += completed;
         try
         {
-            core.Navigate(expected.AbsoluteUri);
+            if (!Object.ReferenceEquals(GetCoreForTab(GetActiveTab(browser)), core))
+                throw new InvalidOperationException("The test navigation target is not the active browser tab.");
+            var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (navigate == null)
+                throw new InvalidOperationException("BrowserForm.NavigateAsync was not found.");
+            await (Task)navigate.Invoke(browser, new object[] { expected.AbsoluteUri, false });
             var finished = await Task.WhenAny(completion.Task, Task.Delay(15000));
             if (finished != completion.Task)
                 throw new TimeoutException("Timed out navigating to " + targetUrl + "; source=" + core.Source);
@@ -1010,7 +1017,7 @@ internal static class WindowsWebView2SmokeTests
             var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
             if (navigate == null)
                 throw new InvalidOperationException("BrowserForm.NavigateAsync was not found.");
-            await (Task)navigate.Invoke(browser, new object[] { expected.AbsoluteUri });
+            await (Task)navigate.Invoke(browser, new object[] { expected.AbsoluteUri, false });
             var finished = await Task.WhenAny(completion.Task, Task.Delay(20000));
             if (finished != completion.Task)
                 throw new TimeoutException("Timed out waiting for the permission test page. Current source: " + core.Source +

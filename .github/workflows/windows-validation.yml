@@ -37,6 +37,7 @@ jobs:
 
       - name: Run Windows WebView2 security and v1.5 feature smoke tests
         shell: pwsh
+        timeout-minutes: 8
         run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
 
       - name: Install NSIS
