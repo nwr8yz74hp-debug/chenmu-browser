@@ -227,8 +227,26 @@ namespace ChenmuBrowser
         private void RefreshVisibleHomeView()
         {
             if (IsDisposed || Disposing || _homeView == null || _homeView.IsDisposed ||
-                !_homeView.Visible || _activeTab == null || !_activeTab.IsHome || _activeTab.IsReader)
+                _activeTab == null || !_activeTab.IsHome || _activeTab.IsReader)
                 return;
+
+            if (!_homeView.Visible)
+            {
+                // Form.Activated may run inside Show before WinForms updates the visible state.
+                if (!IsHandleCreated)
+                    return;
+                try
+                {
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        if (IsDisposed || Disposing || !Visible)
+                            return;
+                        RefreshVisibleHomeView();
+                    });
+                }
+                catch (InvalidOperationException) { }
+                return;
+            }
 
             _homeView.Refresh();
         }

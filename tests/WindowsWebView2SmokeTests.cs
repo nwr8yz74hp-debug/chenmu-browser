@@ -792,12 +792,23 @@ internal static class WindowsWebView2SmokeTests
                 int nonClientAfterBringToFront = nonClientCalculationsBefore;
                 int nonClientAfterActivated = nonClientCalculationsBefore;
                 var activated = new TaskCompletionSource<bool>();
-                EventHandler activatedHandler = delegate { activated.TrySetResult(true); };
+                // Activated can be dispatched inside Show before the managed Visible flag changes.
+                bool resumeShowStarted = false;
+                EventHandler activatedHandler = delegate
+                {
+                    Console.WriteLine("PAGE RESUME activated: showAttemptStarted=" + resumeShowStarted +
+                        ", browserVisible=" + browser.Visible);
+                    if (resumeShowStarted)
+                        activated.TrySetResult(true);
+                };
                 browser.Activated += activatedHandler;
                 var stopwatch = Stopwatch.StartNew();
                 try
                 {
+                    resumeShowStarted = true;
                     browser.Show();
+                    if (!browser.Visible)
+                        throw new InvalidOperationException("The browser window remained hidden after Show during resume testing.");
                     nonClientAfterShow = probe.NonClientCalculationCount;
                     browser.Activate();
                     nonClientAfterActivate = probe.NonClientCalculationCount;
@@ -872,7 +883,8 @@ internal static class WindowsWebView2SmokeTests
             wallpaper.SetPixel(0, 0, expected);
             var activated = new TaskCompletionSource<bool>();
             int paintCount = 0;
-            int paintsWhenActivatedEventReached = -1;
+            // Activated can be dispatched inside Show before the managed Visible flag changes.
+            bool resumeShowStarted = false;
             bool activatedHandlerAttached = false;
             EventHandler activatedHandler = delegate
             {
@@ -883,16 +895,16 @@ internal static class WindowsWebView2SmokeTests
                 bool homeVisible = home.Visible;
                 bool activeIsHome = isHomeProperty != null && (bool)isHomeProperty.GetValue(activeTab, null);
                 bool activeIsReader = isReaderProperty != null && (bool)isReaderProperty.GetValue(activeTab, null);
-                Console.WriteLine("HOME RESUME activated: browserVisible=" + browser.Visible +
-                    ", homeVisible=" + home.Visible + ", activeIsHome=" + activeIsHome +
+                Console.WriteLine("HOME RESUME activated: showAttemptStarted=" + resumeShowStarted +
+                    ", browserVisible=" + browserVisible +
+                    ", homeVisible=" + homeVisible + ", activeIsHome=" + activeIsHome +
                     ", activeIsReader=" + activeIsReader +
                     ", homeHandle=" + home.IsHandleCreated + ", paintCount=" + paintCount);
-                if (!browserVisible || !homeVisible || !activeIsHome || activeIsReader)
+                if (!resumeShowStarted || !activeIsHome || activeIsReader)
                 {
-                    Console.WriteLine("HOME RESUME ignored activation outside the visible home view.");
+                    Console.WriteLine("HOME RESUME ignored activation outside the homepage show attempt.");
                     return;
                 }
-                paintsWhenActivatedEventReached = paintCount;
                 activated.TrySetResult(true);
             };
             PaintEventHandler paintHandler = delegate { paintCount++; };
@@ -909,7 +921,9 @@ internal static class WindowsWebView2SmokeTests
                 await Task.Delay(100);
                 browser.Activated += activatedHandler;
                 activatedHandlerAttached = true;
+                resumeShowStarted = true;
                 browser.Show();
+                int paintsAfterShow = paintCount;
                 Console.WriteLine("HOME RESUME after Show: browserVisible=" + browser.Visible +
                     ", homeVisible=" + home.Visible + ", paintCount=" + paintCount);
                 browser.Activate();
@@ -919,11 +933,12 @@ internal static class WindowsWebView2SmokeTests
                 if (await Task.WhenAny(activated.Task, Task.Delay(5000)) != activated.Task)
                     throw new TimeoutException("The home view did not reactivate within 5 seconds.");
                 await activated.Task;
+                await Task.Delay(100);
 
-                if (!home.Visible || String.IsNullOrWhiteSpace(greeting.Text))
+                if (!browser.Visible || !home.Visible || String.IsNullOrWhiteSpace(greeting.Text))
                     throw new InvalidOperationException("The home view or greeting disappeared after foreground resume.");
-                if (paintsWhenActivatedEventReached <= paintsBeforeResume)
-                    throw new InvalidOperationException("The browser activation handler did not repaint the visible home view.");
+                if (paintCount <= paintsAfterShow)
+                    throw new InvalidOperationException("The homepage did not repaint again after the window's Show/activation sequence.");
                 using (var frame = new Bitmap(home.Width, home.Height))
                 {
                     home.DrawToBitmap(frame, new Rectangle(Point.Empty, home.Size));
