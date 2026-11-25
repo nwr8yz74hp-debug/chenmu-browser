@@ -59,6 +59,7 @@ internal static class WindowsWebView2SmokeTests
     private static int Main()
     {
         bool resumeOnly = String.Equals(Environment.GetEnvironmentVariable("CHENMU_WEBVIEW_SMOKE_RESUME_ONLY"), "1", StringComparison.Ordinal);
+        Version currentProductVersion = GetCurrentProductVersion();
         string root = Path.Combine(Path.GetTempPath(), "chenmu-webview2-smoke-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         Application.EnableVisualStyles();
@@ -68,11 +69,11 @@ internal static class WindowsWebView2SmokeTests
             string browserData = Path.Combine(root, "browser-data");
             Directory.CreateDirectory(browserData);
             if (!resumeOnly)
-                File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.5.0\r\n", new UTF8Encoding(false));
+                File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v" + currentProductVersion.ToString(3) + "\r\n", new UTF8Encoding(false));
             using (var server = new LocalTestServer())
             using (var browser = new BrowserForm(browserData, true, 1))
             {
-                using (resumeOnly ? null : StartUpdateNoticeDialogValidation(browser))
+                using (resumeOnly ? null : StartUpdateNoticeDialogValidation(browser, currentProductVersion))
                 {
                     browser.Shown += async delegate
                     {
@@ -130,7 +131,7 @@ internal static class WindowsWebView2SmokeTests
             if (_failure != null)
                 throw _failure;
             if (!resumeOnly && !_updateNoticeValidated)
-                throw new InvalidOperationException("The v1.5.0 update-complete dialog was not visually validated.");
+                throw new InvalidOperationException("The v" + currentProductVersion.ToString(3) + " update-complete dialog was not visually validated.");
             if (!resumeOnly && !_wallpaperMenuDisposedOnBrowserClose)
                 throw new InvalidOperationException("The wallpaper ContextMenuStrip was not disposed with BrowserForm.");
             return 0;
@@ -146,9 +147,36 @@ internal static class WindowsWebView2SmokeTests
         }
     }
 
-    private static System.Windows.Forms.Timer StartUpdateNoticeDialogValidation(BrowserForm browser)
+    private static Version GetCurrentProductVersion()
+    {
+        var assemblyVersion = typeof(BrowserForm).Assembly.GetName().Version;
+        if (assemblyVersion == null)
+            throw new InvalidOperationException("The browser assembly version was not available to the smoke test.");
+        return new Version(assemblyVersion.Major, assemblyVersion.Minor, Math.Max(0, assemblyVersion.Build));
+    }
+
+    private static string BuildExpectedCurrentUpdateNoticeMessage(Version currentVersion)
+    {
+        string releaseNotesPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RELEASE_NOTES.md");
+        if (!File.Exists(releaseNotesPath))
+            throw new FileNotFoundException("The smoke test could not find the copied current release notes.", releaseNotesPath);
+
+        var helperType = typeof(BrowserForm).Assembly.GetType("ChenmuBrowser.UpdateNoticeContent", true);
+        var readMethod = helperType.GetMethod("ReadCurrentReleaseNotes", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+        var buildMethod = helperType.GetMethod("BuildMessage", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+        if (readMethod == null || buildMethod == null)
+            throw new InvalidOperationException("The current release-notice content helpers were not found.");
+
+        string notes = readMethod.Invoke(null, new object[] { File.ReadAllText(releaseNotesPath, Encoding.UTF8), currentVersion }) as string;
+        if (String.IsNullOrWhiteSpace(notes))
+            throw new InvalidOperationException("The copied release notes did not contain the current v" + currentVersion.ToString(3) + " section.");
+        return buildMethod.Invoke(null, new object[] { currentVersion, notes }) as string;
+    }
+
+    private static System.Windows.Forms.Timer StartUpdateNoticeDialogValidation(BrowserForm browser, Version currentVersion)
     {
         var deadline = DateTime.UtcNow.AddSeconds(15);
+        var expectedMessage = BuildExpectedCurrentUpdateNoticeMessage(currentVersion);
         var timer = new System.Windows.Forms.Timer { Interval = 100 };
         timer.Tick += delegate
         {
@@ -168,16 +196,23 @@ internal static class WindowsWebView2SmokeTests
                     };
                     EnumChildWindows(dialog, callback, IntPtr.Zero);
                     var message = String.Join(Environment.NewLine, text);
-                    if (!message.Contains("已更新至 v1.5.0") ||
-                        !message.Contains("修复前进/返回历史导航") ||
-                        !message.Contains("将当前可见 WebView 网页截图为 PNG") ||
-                        message.Contains("更新完成弹窗误显示过往版本更新内容") ||
-                        message.Contains("切回前台时多余的窗口标题栏重算") ||
-                        message.Contains("ContextMenuStrip 已释放异常"))
-                        throw new InvalidOperationException("The visible update dialog did not contain only the current v1.5.0 changelog: " + message);
+                    string[] staleReleaseContent =
+                    {
+                        "已更新至 v1.5.1",
+                        "已更新至 v1.5.0",
+                        "首页新增 72 条离线日常问候",
+                        "修复前进/返回历史导航",
+                        "更新完成弹窗误显示过往版本更新内容",
+                        "切回前台时多余的窗口标题栏重算",
+                        "ContextMenuStrip 已释放异常"
+                    };
+                    var staleContent = staleReleaseContent.FirstOrDefault(item => message.IndexOf(item, StringComparison.Ordinal) >= 0);
+                    if (message.IndexOf(expectedMessage, StringComparison.Ordinal) < 0 || staleContent != null)
+                        throw new InvalidOperationException("The visible update dialog did not contain only the current v" +
+                            currentVersion.ToString(3) + " changelog. Expected: " + expectedMessage + " Actual: " + message);
 
                     _updateNoticeValidated = true;
-                    Console.WriteLine("PASS: visible v1.5.0 update dialog contains only the current Chinese changelog.");
+                    Console.WriteLine("PASS: visible v" + currentVersion.ToString(3) + " update dialog contains only the current Chinese changelog.");
                 }
                 catch (Exception ex)
                 {
@@ -208,7 +243,7 @@ internal static class WindowsWebView2SmokeTests
             if (DateTime.UtcNow >= deadline)
             {
                 timer.Stop();
-                _failure = new TimeoutException("The v1.5.0 update-complete dialog did not appear within 15 seconds.");
+                _failure = new TimeoutException("The v" + currentVersion.ToString(3) + " update-complete dialog did not appear within 15 seconds.");
                 try { browser.Close(); }
                 catch { }
             }
@@ -401,7 +436,7 @@ internal static class WindowsWebView2SmokeTests
             if (!String.Equals((string)snapshot.GetType().GetProperty("Url").GetValue(snapshot, null), new Uri(closedUrl).AbsoluteUri, StringComparison.OrdinalIgnoreCase) ||
                 Math.Abs((double)snapshot.GetType().GetProperty("ZoomFactor").GetValue(snapshot, null) - 1.3) > 0.001)
                 throw new InvalidOperationException("The recent-tab snapshot did not preserve URL and zoom.");
-            await FocusPageInputAndSendKeysAsync(browser, GetCoreForTab(GetActiveTab(browser)), "^+t");
+            FocusWebViewAndSendKeys(browser, "^+t");
             await WaitUntilAsync(() =>
             {
                 var active = GetActiveTab(browser);
