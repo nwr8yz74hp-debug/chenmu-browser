@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
@@ -86,6 +87,40 @@ namespace ChenmuBrowser
                 IsZoomInShortcut(keyData) || IsZoomOutShortcut(keyData) || IsZoomResetShortcut(keyData);
         }
 
+        private static bool IsKeyDown(int keyCode)
+        {
+            return (GetKeyState(keyCode) & 0x8000) != 0;
+        }
+
+        private void AttachWebViewAcceleratorHandler(WebView2 view)
+        {
+            // WebView2's WinForms wrapper does not expose its controller publicly;
+            // the project pins WebView2 1.0.4314.35, whose wrapper stores it here.
+            // The real Ctrl+F smoke test guards this SDK-specific integration.
+            var controllerField = typeof(WebView2).GetField("_coreWebView2Controller",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var controller = controllerField == null
+                ? null
+                : controllerField.GetValue(view) as CoreWebView2Controller;
+            if (controller == null)
+                return;
+
+            EventHandler<CoreWebView2AcceleratorKeyPressedEventArgs> handler =
+                delegate(object sender, CoreWebView2AcceleratorKeyPressedEventArgs args)
+                {
+                    WebView_AcceleratorKeyPressed(view, args);
+                };
+            controller.AcceleratorKeyPressed += handler;
+            EventHandler disposed = null;
+            disposed = delegate
+            {
+                try { controller.AcceleratorKeyPressed -= handler; }
+                catch { }
+                view.Disposed -= disposed;
+            };
+            view.Disposed += disposed;
+        }
+
         private bool HandlePageToolShortcut(Keys keyData)
         {
             if (keyData == (Keys.Control | Keys.F)) ShowFindBar();
@@ -117,33 +152,23 @@ namespace ChenmuBrowser
             });
         }
 
-        bool IMessageFilter.PreFilterMessage(ref Message m)
+        private void WebView_AcceleratorKeyPressed(WebView2 view, CoreWebView2AcceleratorKeyPressedEventArgs e)
         {
-            const int WmKeyDown = 0x0100;
-            const int WmSysKeyDown = 0x0104;
-            const int VirtualKeyF = 0x46;
-            if ((m.Msg != WmKeyDown && m.Msg != WmSysKeyDown) ||
-                m.WParam.ToInt32() != VirtualKeyF ||
-                (Control.ModifierKeys & (Keys.Control | Keys.Shift | Keys.Alt)) != Keys.Control)
-                return false;
+            if (_activeTab == null || !Object.ReferenceEquals(_activeTab.WebView, view) ||
+                (e.KeyEventKind != CoreWebView2KeyEventKind.KeyDown &&
+                 e.KeyEventKind != CoreWebView2KeyEventKind.SystemKeyDown) ||
+                e.VirtualKey != (uint)Keys.F || !IsKeyDown(0x11) || IsKeyDown(0x10) || IsKeyDown(0x12))
+                return;
 
-            var view = _activeTab == null ? null : _activeTab.WebView;
-            if (view == null || view.IsDisposed || !view.Visible || !view.IsHandleCreated)
-                return false;
-            var focus = GetFocus();
-            if (!view.ContainsFocus && (focus == IntPtr.Zero || !IsChild(view.Handle, focus)))
-                return false;
-
-            // WebView2's native child window can consume Ctrl+F before the WinForms
-            // WebView2.KeyDown event is raised. Claim it at the application message
-            // loop, but only while the active tab's WebView actually owns focus.
+            // The native WebView2 controller consumes Ctrl+F before WinForms raises
+            // KeyDown. Mark the controller accelerator handled and open our own find bar.
+            e.Handled = true;
             var tab = _activeTab;
             BeginInvoke((MethodInvoker)delegate
             {
                 if (!IsDisposed && !Disposing && Object.ReferenceEquals(tab, _activeTab))
                     HandlePageToolShortcut(Keys.Control | Keys.F);
             });
-            return true;
         }
 
         private void ApplyTabZoom(CoreWebView2 core)

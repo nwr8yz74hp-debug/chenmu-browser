@@ -14,7 +14,7 @@ using Microsoft.Web.WebView2.WinForms;
 
 namespace ChenmuBrowser
 {
-    internal sealed partial class BrowserForm : Form, IMessageFilter
+    internal sealed partial class BrowserForm : Form
     {
         private const int EmSetCueBanner = 0x1501;
         private const int DwmwaUseImmersiveDarkMode = 20;
@@ -46,10 +46,7 @@ namespace ChenmuBrowser
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr SendMessage(IntPtr hWnd, int message, IntPtr wParam, string lParam);
         [DllImport("user32.dll")]
-        private static extern IntPtr GetFocus();
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool IsChild(IntPtr hWndParent, IntPtr hWnd);
+        private static extern short GetKeyState(int keyCode);
         [DllImport("dwmapi.dll", PreserveSig = true)]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
         [DllImport("user32.dll", SetLastError = true)]
@@ -144,7 +141,6 @@ namespace ChenmuBrowser
             BuildInterface();
             InitializeV11Features();
             InitializeV15Features();
-            Application.AddMessageFilter(this);
 #if DEBUG
             if (_isIsolatedTest)
                 InitializeVisualTestTabs(initialTestTabs);
@@ -165,7 +161,6 @@ namespace ChenmuBrowser
             };
             FormClosed += delegate
             {
-                Application.RemoveMessageFilter(this);
                 _homeGreetingTimer.Stop();
                 _homeGreetingTimer.Dispose();
                 foreach (var core in _pageAnimationScriptIds.Keys.ToList())
@@ -1813,6 +1808,7 @@ namespace ChenmuBrowser
                 if (IsDisposed || Disposing || !_tabs.Contains(tab))
                     throw new OperationCanceledException("标签页已关闭。");
                 await webView.EnsureCoreWebView2Async(environment);
+                AttachWebViewAcceleratorHandler(webView);
                 ConfigureCoreWebView(webView.CoreWebView2);
                 await RegisterPageAnimationScriptAsync(webView.CoreWebView2);
                 if (tab == _activeTab)
