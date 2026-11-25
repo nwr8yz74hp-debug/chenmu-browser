@@ -942,7 +942,23 @@ internal static class WindowsWebView2SmokeTests
                 using (var frame = new Bitmap(home.Width, home.Height))
                 {
                     home.DrawToBitmap(frame, new Rectangle(Point.Empty, home.Size));
-                    var actual = frame.GetPixel(Math.Max(0, frame.Width - 10), Math.Max(0, frame.Height - 10));
+                    var sample = new Point(Math.Max(0, frame.Width - 10), Math.Max(0, frame.Height - 10));
+                    var actual = frame.GetPixel(sample.X, sample.Y);
+                    try
+                    {
+                        var screenPoint = home.PointToScreen(sample);
+                        using (var screenFrame = new Bitmap(1, 1))
+                        using (var graphics = Graphics.FromImage(screenFrame))
+                        {
+                            graphics.CopyFromScreen(screenPoint, Point.Empty, new Size(1, 1));
+                            Console.WriteLine("HOME RESUME pixel comparison: DrawToBitmap=" + actual +
+                                ", screen=" + screenFrame.GetPixel(0, 0) + ", point=" + screenPoint);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("HOME RESUME screen pixel unavailable: " + ex.GetType().Name + ": " + ex.Message);
+                    }
                     const int tolerance = 40;
                     if (Math.Abs(actual.R - expected.R) > tolerance ||
                         Math.Abs(actual.G - expected.G) > tolerance ||
