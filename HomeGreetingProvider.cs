@@ -5,6 +5,10 @@ namespace ChenmuBrowser
 {
     internal static class HomeGreetingProvider
     {
+        internal const int RotationIntervalMinutes = 3;
+        private static readonly Random GreetingRandom = new Random();
+        private static readonly object GreetingRandomLock = new object();
+
         private static readonly string[] MorningGreetings =
         {
             "早上好，愿你从容开启新一天",
@@ -200,12 +204,26 @@ namespace ChenmuBrowser
 
         internal static string GetGreeting(DateTime now)
         {
-            string[] holidayGreetings = GetHolidayGreetings(now);
-            if (holidayGreetings != null)
-                return ChooseForDate(holidayGreetings, now, 97);
+            return GetGreeting(now, null);
+        }
 
-            string[] greetings = GetDailyGreetings(now.Hour);
-            return ChooseForDate(greetings, now, GetPeriodIndex(now.Hour) * 31 + 7);
+        internal static string GetGreeting(DateTime now, string previousGreeting)
+        {
+            string[] greetings = GetHolidayGreetings(now) ?? GetDailyGreetings(now.Hour);
+            int previousIndex = Array.IndexOf(greetings, previousGreeting);
+            int index;
+            lock (GreetingRandomLock)
+            {
+                if (previousIndex < 0 || greetings.Length < 2)
+                    index = GreetingRandom.Next(greetings.Length);
+                else
+                {
+                    index = GreetingRandom.Next(greetings.Length - 1);
+                    if (index >= previousIndex)
+                        index++;
+                }
+            }
+            return greetings[index];
         }
 
         private static string[] GetHolidayGreetings(DateTime date)
@@ -287,21 +305,5 @@ namespace ChenmuBrowser
             return LateNightGreetings;
         }
 
-        private static int GetPeriodIndex(int hour)
-        {
-            if (hour >= 5 && hour < 12)
-                return 0;
-            if (hour >= 12 && hour < 18)
-                return 1;
-            if (hour >= 18 && hour < 23)
-                return 2;
-            return 3;
-        }
-
-        private static string ChooseForDate(string[] greetings, DateTime date, int salt)
-        {
-            int index = (int)(((long)date.Year * 367 + date.DayOfYear + salt) % greetings.Length);
-            return greetings[index];
-        }
     }
 }

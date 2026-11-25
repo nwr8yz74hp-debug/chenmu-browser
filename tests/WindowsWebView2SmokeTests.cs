@@ -92,8 +92,9 @@ internal static class WindowsWebView2SmokeTests
                             await TestReaderSubresourceBoundaryAsync(root);
                             Console.WriteLine("START: background resume regression.");
                             await TestBackgroundResumeAsync(browser);
+                            await TestHomeViewResumeAsync(browser);
                             await CaptureRunningBrowserScreenshotAsync(browser);
-                            Console.WriteLine("PASS: v1.5 navigation, find, zoom, extensions, recent tabs, exports, permission, Reader boundary and background-resume regressions.");
+                            Console.WriteLine("PASS: v1.5 navigation, find, zoom, extensions, recent tabs, exports, permission, Reader boundary, page resume and home repaint regressions.");
                         }
                         catch (Exception ex)
                         {
@@ -812,6 +813,81 @@ internal static class WindowsWebView2SmokeTests
             core.NavigationStarting -= navigationHandler;
             if (!browser.Visible)
                 browser.Show();
+        }
+    }
+
+    private static async Task TestHomeViewResumeAsync(BrowserForm browser)
+    {
+        var showHome = typeof(BrowserForm).GetMethod("ShowHomeView", BindingFlags.Instance | BindingFlags.NonPublic);
+        var homeField = typeof(BrowserForm).GetField("_homeView", BindingFlags.Instance | BindingFlags.NonPublic);
+        var greetingField = typeof(BrowserForm).GetField("_homeGreetingLabel", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (showHome == null || homeField == null || greetingField == null)
+            throw new InvalidOperationException("The browser home view could not be located for resume testing.");
+
+        showHome.Invoke(browser, null);
+        var home = homeField.GetValue(browser) as Control;
+        var greeting = greetingField.GetValue(browser) as Label;
+        if (home == null || greeting == null || !home.Visible || String.IsNullOrWhiteSpace(greeting.Text))
+            throw new InvalidOperationException("The browser home view was not ready for resume testing.");
+
+        var originalWallpaper = home.BackgroundImage;
+        var expected = Color.FromArgb(39, 112, 177);
+        using (var wallpaper = new Bitmap(1, 1))
+        {
+            wallpaper.SetPixel(0, 0, expected);
+            var activated = new TaskCompletionSource<bool>();
+            int paintCount = 0;
+            int paintsWhenActivatedEventReached = -1;
+            EventHandler activatedHandler = delegate
+            {
+                paintsWhenActivatedEventReached = paintCount;
+                activated.TrySetResult(true);
+            };
+            PaintEventHandler paintHandler = delegate { paintCount++; };
+            browser.Activated += activatedHandler;
+            home.Paint += paintHandler;
+            try
+            {
+                home.BackgroundImage = wallpaper;
+                home.Refresh();
+                int paintsBeforeResume = paintCount;
+                browser.Hide();
+                await WaitUntilAsync(() => !browser.Visible, 2000);
+                await Task.Delay(100);
+                browser.Show();
+                browser.Activate();
+                browser.BringToFront();
+                if (await Task.WhenAny(activated.Task, Task.Delay(5000)) != activated.Task)
+                    throw new TimeoutException("The home view did not reactivate within 5 seconds.");
+                await activated.Task;
+
+                if (!home.Visible || String.IsNullOrWhiteSpace(greeting.Text))
+                    throw new InvalidOperationException("The home view or greeting disappeared after foreground resume.");
+                if (paintsWhenActivatedEventReached <= paintsBeforeResume)
+                    throw new InvalidOperationException("The browser activation handler did not repaint the visible home view.");
+                using (var frame = new Bitmap(home.Width, home.Height))
+                {
+                    home.DrawToBitmap(frame, new Rectangle(Point.Empty, home.Size));
+                    var actual = frame.GetPixel(Math.Max(0, frame.Width - 10), Math.Max(0, frame.Height - 10));
+                    const int tolerance = 40;
+                    if (Math.Abs(actual.R - expected.R) > tolerance ||
+                        Math.Abs(actual.G - expected.G) > tolerance ||
+                        Math.Abs(actual.B - expected.B) > tolerance)
+                        throw new InvalidOperationException("The homepage wallpaper was not repainted after resume; expected " +
+                            expected + ", got " + actual + ".");
+                }
+
+                Console.WriteLine("PASS: home view and wallpaper repainted after hide/resume.");
+            }
+            finally
+            {
+                browser.Activated -= activatedHandler;
+                home.Paint -= paintHandler;
+                home.BackgroundImage = originalWallpaper;
+                home.Refresh();
+                if (!browser.Visible)
+                    browser.Show();
+            }
         }
     }
 

@@ -125,7 +125,11 @@ namespace ChenmuBrowser
             LoadSessionSnapshot();
             HandleCreated += delegate { ApplyWindowCaptionColors(); };
             HandleDestroyed += delegate { _captionColorsAppliedHandle = IntPtr.Zero; };
-            Activated += delegate { ApplyWindowCaptionColors(); };
+            Activated += delegate
+            {
+                ApplyWindowCaptionColors();
+                RefreshVisibleHomeView();
+            };
             BuildInterface();
             InitializeV11Features();
             InitializeV15Features();
@@ -218,6 +222,15 @@ namespace ChenmuBrowser
                 _captionColorsAppliedHandle = handle;
             }
             catch { _captionColorsAppliedHandle = IntPtr.Zero; }
+        }
+
+        private void RefreshVisibleHomeView()
+        {
+            if (IsDisposed || Disposing || _homeView == null || _homeView.IsDisposed ||
+                !_homeView.Visible || _activeTab == null || !_activeTab.IsHome || _activeTab.IsReader)
+                return;
+
+            _homeView.Refresh();
         }
 
         private static bool IsWindows11OrGreater()

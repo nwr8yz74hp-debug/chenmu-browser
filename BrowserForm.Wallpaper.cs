@@ -153,9 +153,9 @@ namespace ChenmuBrowser
                 return;
             var previous = _homeGradientPanel.BackgroundImage;
             _homeGradientPanel.BackgroundImage = LoadHomeWallpaperImage();
-            _homeGradientPanel.Invalidate();
             if (previous != null)
                 previous.Dispose();
+            _homeGradientPanel.Refresh();
         }
     }
 }

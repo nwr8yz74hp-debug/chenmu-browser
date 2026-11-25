@@ -26,6 +26,7 @@ namespace ChenmuBrowser
         private Label _homeBrandLabel;
         private Label _homeGreetingLabel;
         private Label _homeClockLabel;
+        private DateTime _nextHomeGreetingChangeAt = DateTime.MinValue;
         private List<BrowserHistoryRecord> _historyEntries = new List<BrowserHistoryRecord>();
         private bool _historyLoaded;
         private DebouncedWorkQueue<List<BrowserHistoryRecord>> _historyWriteQueue;
@@ -75,9 +76,16 @@ namespace ChenmuBrowser
         {
             if (_homeGreetingLabel == null || _homeGreetingLabel.IsDisposed)
                 return;
-            _homeGreetingLabel.Text = GetHomeGreeting();
+            var now = DateTime.Now;
+            if (_nextHomeGreetingChangeAt == DateTime.MinValue)
+                _nextHomeGreetingChangeAt = now.AddMinutes(HomeGreetingProvider.RotationIntervalMinutes);
+            else if (now >= _nextHomeGreetingChangeAt)
+            {
+                _homeGreetingLabel.Text = HomeGreetingProvider.GetGreeting(now, _homeGreetingLabel.Text);
+                _nextHomeGreetingChangeAt = now.AddMinutes(HomeGreetingProvider.RotationIntervalMinutes);
+            }
             if (_homeClockLabel != null && !_homeClockLabel.IsDisposed)
-                _homeClockLabel.Text = DateTime.Now.ToString("yyyy年M月d日 dddd  HH:mm", CultureInfo.GetCultureInfo("zh-CN")) +
+                _homeClockLabel.Text = now.ToString("yyyy年M月d日 dddd  HH:mm", CultureInfo.GetCultureInfo("zh-CN")) +
                     "  ·  浏览发现世界";
         }
 
