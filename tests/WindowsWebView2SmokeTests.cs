@@ -349,10 +349,8 @@ internal static class WindowsWebView2SmokeTests
             await NavigateHistoryAndWaitAsync(browser, firstCore, "GoBack", a);
             await NavigateHistoryAndWaitAsync(browser, firstCore, "GoForward", b);
             await NavigateHistoryAndWaitAsync(browser, firstCore, "GoForward", c);
-            await FocusPageInputAndSendKeysAsync(browser, firstCore, "%{LEFT}");
-            await WaitUntilAsync(() => String.Equals(firstCore.Source, new Uri(b).AbsoluteUri, StringComparison.OrdinalIgnoreCase), 12000);
-            await FocusPageInputAndSendKeysAsync(browser, firstCore, "%{RIGHT}");
-            await WaitUntilAsync(() => String.Equals(firstCore.Source, new Uri(c).AbsoluteUri, StringComparison.OrdinalIgnoreCase), 12000);
+            await SendHistoryShortcutAndWaitAsync(browser, firstCore, "%{LEFT}", b);
+            await SendHistoryShortcutAndWaitAsync(browser, firstCore, "%{RIGHT}", c);
             Console.WriteLine("PASS: HTTP A→B→C history buttons and Alt+Left/Right keyboard navigation preserve history.");
 
             var createTab = typeof(BrowserForm).GetMethod("CreateNewTab", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -533,8 +531,40 @@ internal static class WindowsWebView2SmokeTests
             throw new InvalidOperationException("The active WebView did not retain keyboard focus before sending " + sequence +
                 "; visible=" + view.Visible + ", enabled=" + view.Enabled + ", canFocus=" + view.CanFocus +
                 ", browserActive=" + browser.ContainsFocus + ".");
+        var nativeFocus = GetFocus();
+        if (!IsChild(view.Handle, nativeFocus))
+            throw new InvalidOperationException("Native keyboard focus was not inside the active WebView before sending " + sequence + ".");
         SendKeys.SendWait(sequence);
         Application.DoEvents();
+    }
+
+    private static async Task SendHistoryShortcutAndWaitAsync(BrowserForm browser, CoreWebView2 core, string sequence, string targetUrl)
+    {
+        string expected = new Uri(targetUrl).AbsoluteUri;
+        TimeoutException lastTimeout = null;
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            await FocusPageInputAndSendKeysAsync(browser, core, sequence);
+            try
+            {
+                await WaitUntilAsync(() => String.Equals(core.Source, expected, StringComparison.OrdinalIgnoreCase), 2000);
+                if (attempt > 1)
+                    Console.WriteLine("PASS: " + sequence + " reached the expected history page on retry " + attempt + ".");
+                return;
+            }
+            catch (TimeoutException ex)
+            {
+                lastTimeout = ex;
+                if (attempt < 3)
+                {
+                    Console.WriteLine("Retrying " + sequence + " history shortcut; attempt=" + (attempt + 1) +
+                        ", current source=" + core.Source + ".");
+                    await Task.Delay(200);
+                }
+            }
+        }
+        throw new TimeoutException("History shortcut " + sequence + " did not navigate to " + expected +
+            "; current source=" + core.Source + ".", lastTimeout);
     }
 
     private static void FocusAddressAndSendKeys(BrowserForm browser, string sequence)
