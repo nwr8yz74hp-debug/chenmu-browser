@@ -785,6 +785,10 @@ internal static class WindowsWebView2SmokeTests
                 await WaitUntilAsync(() => !browser.Visible, 2000);
                 await Task.Delay(100);
                 int nonClientCalculationsBefore = probe.NonClientCalculationCount;
+                int nonClientAfterShow = nonClientCalculationsBefore;
+                int nonClientAfterActivate = nonClientCalculationsBefore;
+                int nonClientAfterBringToFront = nonClientCalculationsBefore;
+                int nonClientAfterActivated = nonClientCalculationsBefore;
                 var activated = new TaskCompletionSource<bool>();
                 EventHandler activatedHandler = delegate { activated.TrySetResult(true); };
                 browser.Activated += activatedHandler;
@@ -792,12 +796,16 @@ internal static class WindowsWebView2SmokeTests
                 try
                 {
                     browser.Show();
+                    nonClientAfterShow = probe.NonClientCalculationCount;
                     browser.Activate();
+                    nonClientAfterActivate = probe.NonClientCalculationCount;
                     browser.BringToFront();
+                    nonClientAfterBringToFront = probe.NonClientCalculationCount;
                     var activationResult = await Task.WhenAny(activated.Task, Task.Delay(5000));
                     if (activationResult != activated.Task)
                         throw new TimeoutException("The browser window did not reactivate within 5 seconds.");
                     await activated.Task;
+                    nonClientAfterActivated = probe.NonClientCalculationCount;
                 }
                 finally
                 {
@@ -815,8 +823,16 @@ internal static class WindowsWebView2SmokeTests
                     throw new InvalidOperationException("The page URL changed while returning to the foreground.");
                 if (navigationStarts != 0)
                     throw new InvalidOperationException("Returning to the foreground unexpectedly started " + navigationStarts + " navigation(s).");
-                if (probe.NonClientCalculationCount != nonClientCalculationsBefore)
-                    throw new InvalidOperationException("The browser recalculated its non-client frame when merely reactivated.");
+                await Task.Delay(100);
+                int nonClientAfterSettle = probe.NonClientCalculationCount;
+                Console.WriteLine("WM_NCCALCSIZE resume counts: before=" + nonClientCalculationsBefore.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ", Show=" + nonClientAfterShow.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ", Activate=" + nonClientAfterActivate.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ", BringToFront=" + nonClientAfterBringToFront.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ", Activated=" + nonClientAfterActivated.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ", settled=" + nonClientAfterSettle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                if (nonClientAfterSettle != nonClientCalculationsBefore)
+                    throw new InvalidOperationException("The browser recalculated its non-client frame during resume; see WM_NCCALCSIZE phase counts above.");
                 if (stopwatch.ElapsedMilliseconds > 5000)
                     throw new TimeoutException("The browser took " + stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) + " ms to reactivate; limit is 5000 ms.");
 
