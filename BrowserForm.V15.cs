@@ -117,6 +117,35 @@ namespace ChenmuBrowser
             });
         }
 
+        bool IMessageFilter.PreFilterMessage(ref Message m)
+        {
+            const int WmKeyDown = 0x0100;
+            const int WmSysKeyDown = 0x0104;
+            const int VirtualKeyF = 0x46;
+            if ((m.Msg != WmKeyDown && m.Msg != WmSysKeyDown) ||
+                m.WParam.ToInt32() != VirtualKeyF ||
+                (Control.ModifierKeys & (Keys.Control | Keys.Shift | Keys.Alt)) != Keys.Control)
+                return false;
+
+            var view = _activeTab == null ? null : _activeTab.WebView;
+            if (view == null || view.IsDisposed || !view.Visible || !view.IsHandleCreated)
+                return false;
+            var focus = GetFocus();
+            if (!view.ContainsFocus && (focus == IntPtr.Zero || !IsChild(view.Handle, focus)))
+                return false;
+
+            // WebView2's native child window can consume Ctrl+F before the WinForms
+            // WebView2.KeyDown event is raised. Claim it at the application message
+            // loop, but only while the active tab's WebView actually owns focus.
+            var tab = _activeTab;
+            BeginInvoke((MethodInvoker)delegate
+            {
+                if (!IsDisposed && !Disposing && Object.ReferenceEquals(tab, _activeTab))
+                    HandlePageToolShortcut(Keys.Control | Keys.F);
+            });
+            return true;
+        }
+
         private void ApplyTabZoom(CoreWebView2 core)
         {
             var tab = FindTabForCore(core);
