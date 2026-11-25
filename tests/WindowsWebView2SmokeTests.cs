@@ -115,7 +115,10 @@ internal static class WindowsWebView2SmokeTests
                             }
                             else if (findOnly)
                             {
-                                Console.WriteLine("START: isolated Ctrl+F route diagnostics.");
+                                Console.WriteLine("START: navigation-history precondition for Ctrl+F route diagnostics.");
+                                await TestV15NavigationHistoryAsync(browser);
+                                Console.WriteLine("PASS: navigation-history precondition completed.");
+                                Console.WriteLine("START: isolated Ctrl+F route diagnostics after navigation.");
                                 using (var findServer = new LocalHttpTestServer())
                                     await TestCtrlFAsync(browser, findServer);
                                 Console.WriteLine("PASS: isolated Ctrl+F smoke completed.");
