@@ -760,6 +760,17 @@ internal static class WindowsWebView2SmokeTests
         }
     }
 
+    private static Color CaptureScreenPixel(Control control, Point clientPoint)
+    {
+        var screenPoint = control.PointToScreen(clientPoint);
+        using (var bitmap = new Bitmap(1, 1))
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.CopyFromScreen(screenPoint, Point.Empty, new Size(1, 1));
+            return bitmap.GetPixel(0, 0);
+        }
+    }
+
     private static async Task TestBackgroundResumeAsync(BrowserForm browser)
     {
         await EnsureBrowserWebViewAsync(browser);
@@ -913,6 +924,20 @@ internal static class WindowsWebView2SmokeTests
             {
                 home.BackgroundImage = wallpaper;
                 home.Refresh();
+                var samplePoints = new[]
+                {
+                    new Point(5, 5),
+                    new Point(Math.Max(0, home.Width - 10), 5),
+                    new Point(5, Math.Max(0, home.Height - 10)),
+                    new Point(Math.Max(0, home.Width - 10), Math.Max(0, home.Height - 10))
+                };
+                var screenPixelsBeforeResume = new Color[samplePoints.Length];
+                for (var index = 0; index < samplePoints.Length; index++)
+                {
+                    screenPixelsBeforeResume[index] = CaptureScreenPixel(home, samplePoints[index]);
+                    Console.WriteLine("HOME RESUME baseline screen pixel[" + index.ToString(System.Globalization.CultureInfo.InvariantCulture) +"] at " +
+                        samplePoints[index] + "=" + screenPixelsBeforeResume[index]);
+                }
                 int paintsBeforeResume = paintCount;
                 Console.WriteLine("HOME RESUME baseline: browserVisible=" + browser.Visible +
                     ", homeVisible=" + home.Visible + ", paintCount=" + paintsBeforeResume);
@@ -942,7 +967,14 @@ internal static class WindowsWebView2SmokeTests
                 using (var frame = new Bitmap(home.Width, home.Height))
                 {
                     home.DrawToBitmap(frame, new Rectangle(Point.Empty, home.Size));
-                    var sample = new Point(Math.Max(0, frame.Width - 10), Math.Max(0, frame.Height - 10));
+                    for (var index = 0; index < samplePoints.Length; index++)
+                    {
+                        var screenAfterResume = CaptureScreenPixel(home, samplePoints[index]);
+                        Console.WriteLine("HOME RESUME pixel[" + index.ToString(System.Globalization.CultureInfo.InvariantCulture) +"] at " +
+                            samplePoints[index] + ": before=" + screenPixelsBeforeResume[index] +
+                            ", screenAfter=" + screenAfterResume + ", DrawToBitmap=" + frame.GetPixel(samplePoints[index].X, samplePoints[index].Y));
+                    }
+                    var sample = samplePoints[3];
                     var actual = frame.GetPixel(sample.X, sample.Y);
                     try
                     {
