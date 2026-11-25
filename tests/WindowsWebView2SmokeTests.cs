@@ -867,33 +867,35 @@ internal static class WindowsWebView2SmokeTests
         var originalWallpaper = home.BackgroundImage;
         var expected = Color.FromArgb(39, 112, 177);
         var activeTabField = typeof(BrowserForm).GetField("_activeTab", BindingFlags.Instance | BindingFlags.NonPublic);
-        var activeTab = activeTabField == null ? null : activeTabField.GetValue(browser);
-        var isHomeProperty = activeTab == null ? null : activeTab.GetType().GetProperty("IsHome");
-        var isReaderProperty = activeTab == null ? null : activeTab.GetType().GetProperty("IsReader");
         using (var wallpaper = new Bitmap(1, 1))
         {
             wallpaper.SetPixel(0, 0, expected);
             var activated = new TaskCompletionSource<bool>();
             int paintCount = 0;
             int paintsWhenActivatedEventReached = -1;
+            bool activatedHandlerAttached = false;
             EventHandler activatedHandler = delegate
             {
-                paintsWhenActivatedEventReached = paintCount;
-                activeTab = activeTabField == null ? null : activeTabField.GetValue(browser);
-                isHomeProperty = activeTab == null ? null : activeTab.GetType().GetProperty("IsHome");
-                isReaderProperty = activeTab == null ? null : activeTab.GetType().GetProperty("IsReader");
+                var activeTab = activeTabField == null ? null : activeTabField.GetValue(browser);
+                var isHomeProperty = activeTab == null ? null : activeTab.GetType().GetProperty("IsHome");
+                var isReaderProperty = activeTab == null ? null : activeTab.GetType().GetProperty("IsReader");
+                bool browserVisible = browser.Visible;
+                bool homeVisible = home.Visible;
+                bool activeIsHome = isHomeProperty != null && (bool)isHomeProperty.GetValue(activeTab, null);
+                bool activeIsReader = isReaderProperty != null && (bool)isReaderProperty.GetValue(activeTab, null);
                 Console.WriteLine("HOME RESUME activated: browserVisible=" + browser.Visible +
-                    ", homeVisible=" + home.Visible + ", activeIsHome=" + (isHomeProperty != null && (bool)isHomeProperty.GetValue(activeTab, null)) +
-                    ", activeIsReader=" + (isReaderProperty != null && (bool)isReaderProperty.GetValue(activeTab, null)) +
+                    ", homeVisible=" + home.Visible + ", activeIsHome=" + activeIsHome +
+                    ", activeIsReader=" + activeIsReader +
                     ", homeHandle=" + home.IsHandleCreated + ", paintCount=" + paintCount);
+                if (!browserVisible || !homeVisible || !activeIsHome || activeIsReader)
+                {
+                    Console.WriteLine("HOME RESUME ignored activation outside the visible home view.");
+                    return;
+                }
+                paintsWhenActivatedEventReached = paintCount;
                 activated.TrySetResult(true);
             };
-            PaintEventHandler paintHandler = delegate
-            {
-                paintCount++;
-                Console.WriteLine("HOME RESUME home Paint #" + paintCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            };
-            browser.Activated += activatedHandler;
+            PaintEventHandler paintHandler = delegate { paintCount++; };
             home.Paint += paintHandler;
             try
             {
@@ -905,6 +907,8 @@ internal static class WindowsWebView2SmokeTests
                 browser.Hide();
                 await WaitUntilAsync(() => !browser.Visible, 2000);
                 await Task.Delay(100);
+                browser.Activated += activatedHandler;
+                activatedHandlerAttached = true;
                 browser.Show();
                 Console.WriteLine("HOME RESUME after Show: browserVisible=" + browser.Visible +
                     ", homeVisible=" + home.Visible + ", paintCount=" + paintCount);
@@ -936,7 +940,8 @@ internal static class WindowsWebView2SmokeTests
             }
             finally
             {
-                browser.Activated -= activatedHandler;
+                if (activatedHandlerAttached)
+                    browser.Activated -= activatedHandler;
                 home.Paint -= paintHandler;
                 home.BackgroundImage = originalWallpaper;
                 home.Refresh();
