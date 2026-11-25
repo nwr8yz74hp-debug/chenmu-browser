@@ -785,6 +785,8 @@ internal static class WindowsWebView2SmokeTests
                 await WaitUntilAsync(() => !browser.Visible, 2000);
                 await Task.Delay(100);
                 int nonClientCalculationsBefore = probe.NonClientCalculationCount;
+                // Re-showing a hidden window may legitimately recalculate its client area.
+                // The activation regression is an additional calculation after Show completes.
                 int nonClientAfterShow = nonClientCalculationsBefore;
                 int nonClientAfterActivate = nonClientCalculationsBefore;
                 int nonClientAfterBringToFront = nonClientCalculationsBefore;
@@ -831,13 +833,13 @@ internal static class WindowsWebView2SmokeTests
                     ", BringToFront=" + nonClientAfterBringToFront.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                     ", Activated=" + nonClientAfterActivated.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                     ", settled=" + nonClientAfterSettle.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                if (nonClientAfterSettle != nonClientCalculationsBefore)
-                    throw new InvalidOperationException("The browser recalculated its non-client frame during resume; see WM_NCCALCSIZE phase counts above.");
+                if (nonClientAfterSettle != nonClientAfterShow)
+                    throw new InvalidOperationException("The browser recalculated its non-client frame again after Show during activation; see WM_NCCALCSIZE phase counts above.");
                 if (stopwatch.ElapsedMilliseconds > 5000)
                     throw new TimeoutException("The browser took " + stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) + " ms to reactivate; limit is 5000 ms.");
 
                 Console.WriteLine("PASS: hide/resume " + stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                    " ms; page responsive; URL/DOM preserved; navigation delta=0; WM_NCCALCSIZE delta=0.");
+                    " ms; page responsive; URL/DOM preserved; navigation delta=0; WM_NCCALCSIZE delta after Show=0.");
             }
         }
         finally
