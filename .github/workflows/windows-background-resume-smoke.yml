@@ -27,3 +27,38 @@ jobs:
         env:
           CHENMU_WEBVIEW_SMOKE_RESUME_ONLY: '1'
         run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
+
+  homepage-visual-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run independent homepage wallpaper visual smoke
+        shell: pwsh
+        run: dotnet run --project tests/HomeVisualSmokeTests.csproj -c Release
+
+  ctrl-f-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run isolated Ctrl+F route diagnostics
+        shell: pwsh
+        env:
+          CHENMU_WEBVIEW_SMOKE_FIND_ONLY: '1'
+          CHENMU_WEBVIEW_SMOKE_KEY_DIAGNOSTICS: '1'
+        run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release

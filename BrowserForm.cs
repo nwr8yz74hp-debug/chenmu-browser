@@ -1040,10 +1040,19 @@ namespace ChenmuBrowser
             }
             if (IsPageToolShortcut(keyData))
             {
+                LogKeyDiagnostic("ProcessCmdKey received keyData=" + keyData + ", msgHWnd=" + msg.HWnd +
+                    ", activeWebViewExists=" + (_activeTab != null && _activeTab.WebView != null) +
+                    ", activeWebViewContainsFocus=" + (_activeTab != null && _activeTab.WebView != null && _activeTab.WebView.ContainsFocus) +
+                    ", activeWebViewFocused=" + (_activeTab != null && _activeTab.WebView != null && _activeTab.WebView.Focused));
                 // WebView2 forwards accelerator keys to its KeyDown event. Avoid handling
                 // the same shortcut twice when focus is inside its native child window.
                 if (_activeTab != null && _activeTab.WebView != null && _activeTab.WebView.ContainsFocus)
-                    return base.ProcessCmdKey(ref msg, keyData);
+                {
+                    bool baseHandled = base.ProcessCmdKey(ref msg, keyData);
+                    LogKeyDiagnostic("ProcessCmdKey forwarded to base because WebView contains focus; baseHandled=" + baseHandled);
+                    return baseHandled;
+                }
+                LogKeyDiagnostic("ProcessCmdKey handling page shortcut directly because WebView does not contain focus.");
                 return HandlePageToolShortcut(keyData);
             }
             if (keyData == (Keys.Control | Keys.O) && _activeTab != null &&

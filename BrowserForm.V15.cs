@@ -20,6 +20,17 @@ namespace ChenmuBrowser
         private TextBox _findTextBox;
         private CoreWebView2 _findCore;
 
+        private static bool IsKeyDiagnosticsEnabled()
+        {
+            return String.Equals(Environment.GetEnvironmentVariable("CHENMU_WEBVIEW_SMOKE_KEY_DIAGNOSTICS"), "1", StringComparison.Ordinal);
+        }
+
+        private static void LogKeyDiagnostic(string message)
+        {
+            if (IsKeyDiagnosticsEnabled())
+                Console.WriteLine("[KEYDIAG] " + message);
+        }
+
         private void InitializeV15Features()
         {
             if (_settingsMenu == null)
@@ -103,17 +114,27 @@ namespace ChenmuBrowser
         {
             var view = sender as WebView2;
             if (_activeTab == null || !Object.ReferenceEquals(_activeTab.WebView, view))
+            {
+                LogKeyDiagnostic("WebView_KeyDown ignored: senderIsActive=" + Object.ReferenceEquals(_activeTab == null ? null : _activeTab.WebView, view));
                 return;
+            }
             var keyData = e.KeyData;
             if (!IsPageToolShortcut(keyData))
                 return;
+            LogKeyDiagnostic("WebView_KeyDown received keyData=" + keyData + ", viewContainsFocus=" + view.ContainsFocus +
+                ", viewFocused=" + view.Focused + ", viewHandle=" + (view.IsHandleCreated ? view.Handle.ToString() : "<none>"));
             e.Handled = true;
             e.SuppressKeyPress = true;
             var tab = _activeTab;
             BeginInvoke((MethodInvoker)delegate
             {
+                LogKeyDiagnostic("BeginInvoke ran keyData=" + keyData + ", tabStillActive=" + Object.ReferenceEquals(tab, _activeTab) +
+                    ", disposed=" + IsDisposed + ", disposing=" + Disposing);
                 if (!IsDisposed && !Disposing && Object.ReferenceEquals(tab, _activeTab))
+                {
+                    LogKeyDiagnostic("BeginInvoke dispatching HandlePageToolShortcut keyData=" + keyData);
                     HandlePageToolShortcut(keyData);
+                }
             });
         }
 
@@ -221,13 +242,17 @@ namespace ChenmuBrowser
         private void ShowFindBar()
         {
             var core = GetCurrentPageCore();
+            LogKeyDiagnostic("ShowFindBar entered: currentCore=" + (core != null) + ", findFormExists=" + (_findForm != null) +
+                ", findTextBoxExists=" + (_findTextBox != null) + ", source=" + (core == null ? "<none>" : core.Source));
             if (core == null)
             {
+                LogKeyDiagnostic("ShowFindBar returned because no eligible HTTP(S) page is active.");
                 _statusLabel.Text = "请先打开普通网页再使用页内查找。";
                 return;
             }
             if (_findForm != null && !_findForm.IsDisposed && Object.ReferenceEquals(_findCore, core))
             {
+                LogKeyDiagnostic("ShowFindBar reusing existing form; textBoxExists=" + (_findTextBox != null));
                 _findForm.Activate();
                 if (_findTextBox != null)
                     _findTextBox.Focus();
@@ -266,6 +291,9 @@ namespace ChenmuBrowser
             _findForm = form;
             _findTextBox = textBox;
             _findCore = core;
+            LogKeyDiagnostic("ShowFindBar assigned fields: formHandleCreated=" + form.IsHandleCreated +
+                ", textBoxHandleCreated=" + textBox.IsHandleCreated + ", findFormFieldMatches=" + Object.ReferenceEquals(_findForm, form) +
+                ", findTextBoxFieldMatches=" + Object.ReferenceEquals(_findTextBox, textBox));
 
             textBox.TextChanged += async delegate { await StartFindAsync(); };
             textBox.KeyDown += delegate(object sender, KeyEventArgs args)
@@ -301,6 +329,9 @@ namespace ChenmuBrowser
             var screen = Screen.FromControl(this).WorkingArea;
             form.Location = new Point(Math.Max(screen.Left, Right - form.Width - 24), Math.Max(screen.Top, Top + 70));
             textBox.Focus();
+            LogKeyDiagnostic("ShowFindBar finished: formVisible=" + form.Visible + ", formHandleCreated=" + form.IsHandleCreated +
+                ", textBoxFocused=" + textBox.Focused + ", textBoxHandleCreated=" + textBox.IsHandleCreated +
+                ", findTextBoxFieldMatches=" + Object.ReferenceEquals(_findTextBox, textBox));
         }
 
         private async Task StartFindAsync()

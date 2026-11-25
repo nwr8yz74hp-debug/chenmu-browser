@@ -25,6 +25,17 @@ internal static class WindowsWebView2SmokeTests
     private static bool _wallpaperMenuDisposedOnBrowserClose;
     private static bool _updateNoticeValidated;
 
+    private static bool KeyDiagnosticsEnabled
+    {
+        get { return String.Equals(Environment.GetEnvironmentVariable("CHENMU_WEBVIEW_SMOKE_KEY_DIAGNOSTICS"), "1", StringComparison.Ordinal); }
+    }
+
+    private static void LogKeyDiagnostic(string message)
+    {
+        if (KeyDiagnosticsEnabled)
+            Console.WriteLine("[KEYDIAG TEST] " + message);
+    }
+
     private delegate bool EnumChildWindowCallback(IntPtr handle, IntPtr parameter);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -40,6 +51,16 @@ internal static class WindowsWebView2SmokeTests
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetFocus();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsChild(IntPtr parent, IntPtr child);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -59,6 +80,9 @@ internal static class WindowsWebView2SmokeTests
     private static int Main()
     {
         bool resumeOnly = String.Equals(Environment.GetEnvironmentVariable("CHENMU_WEBVIEW_SMOKE_RESUME_ONLY"), "1", StringComparison.Ordinal);
+        bool findOnly = String.Equals(Environment.GetEnvironmentVariable("CHENMU_WEBVIEW_SMOKE_FIND_ONLY"), "1", StringComparison.Ordinal);
+        if (resumeOnly && findOnly)
+            throw new InvalidOperationException("Choose either resume-only or find-only smoke mode, not both.");
         string root = Path.Combine(Path.GetTempPath(), "chenmu-webview2-smoke-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         Application.EnableVisualStyles();
@@ -67,12 +91,12 @@ internal static class WindowsWebView2SmokeTests
         {
             string browserData = Path.Combine(root, "browser-data");
             Directory.CreateDirectory(browserData);
-            if (!resumeOnly)
+            if (!resumeOnly && !findOnly)
                 File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.5.0\r\n", new UTF8Encoding(false));
             using (var server = new LocalTestServer())
             using (var browser = new BrowserForm(browserData, true, 1))
             {
-                var updateNoticeValidation = resumeOnly ? null : StartUpdateNoticeDialogValidation(browser);
+                var updateNoticeValidation = resumeOnly || findOnly ? null : StartUpdateNoticeDialogValidation(browser);
                 using (updateNoticeValidation)
                 {
                     browser.Shown += async delegate
@@ -88,6 +112,13 @@ internal static class WindowsWebView2SmokeTests
                                 await TestBackgroundResumeAsync(browser);
                                 await TestHomeViewResumeAsync(browser);
                                 Console.WriteLine("PASS: isolated background resume and homepage repaint regressions.");
+                            }
+                            else if (findOnly)
+                            {
+                                Console.WriteLine("START: isolated Ctrl+F route diagnostics.");
+                                using (var findServer = new LocalHttpTestServer())
+                                    await TestCtrlFAsync(browser, findServer);
+                                Console.WriteLine("PASS: isolated Ctrl+F smoke completed.");
                             }
                             else
                             {
@@ -128,9 +159,9 @@ internal static class WindowsWebView2SmokeTests
             }
             if (_failure != null)
                 throw _failure;
-            if (!resumeOnly && !_updateNoticeValidated)
+            if (!resumeOnly && !findOnly && !_updateNoticeValidated)
                 throw new InvalidOperationException("The v1.5.0 update-complete dialog was not visually validated.");
-            if (!resumeOnly && !_wallpaperMenuDisposedOnBrowserClose)
+            if (!resumeOnly && !findOnly && !_wallpaperMenuDisposedOnBrowserClose)
                 throw new InvalidOperationException("The wallpaper ContextMenuStrip was not disposed with BrowserForm.");
             return 0;
         }
@@ -307,27 +338,7 @@ internal static class WindowsWebView2SmokeTests
     {
         using (var server = new LocalHttpTestServer())
         {
-            await EnsureBrowserWebViewAsync(browser);
-            var core = GetCoreForTab(GetActiveTab(browser));
-            string findUrl = server.Url + "find-page";
-            await NavigateCoreAndWaitAsync(browser, core, findUrl);
-
-            var findTextField = typeof(BrowserForm).GetField("_findTextBox", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (findTextField == null)
-                throw new InvalidOperationException("The v1.5 find bar was not found.");
-            await FocusPageInputAndSendKeysAsync(browser, core, "^f");
-            await WaitUntilAsync(() => findTextField.GetValue(browser) is TextBox, 5000);
-            var findText = findTextField.GetValue(browser) as TextBox;
-            if (findText == null || findText.FindForm() == null || !findText.FindForm().Visible)
-                throw new InvalidOperationException("Ctrl+F did not create its find bar input.");
-            findText.Text = "needle";
-            await WaitUntilAsync(() => core.Find.MatchCount >= 2, 5000);
-            if (core.Find.MatchCount < 2)
-                throw new InvalidOperationException("The v1.5 find bar did not match repeated text in the page.");
-            var closeFind = findText.FindForm();
-            if (closeFind != null)
-                closeFind.Close();
-            Console.WriteLine("PASS: Ctrl+F custom find bar finds and highlights page text.");
+            await TestCtrlFAsync(browser, server);
 
             var setZoom = typeof(BrowserForm).GetMethod("SetActiveTabZoom", BindingFlags.Instance | BindingFlags.NonPublic);
             var createTab = typeof(BrowserForm).GetMethod("CreateNewTab", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -416,6 +427,49 @@ internal static class WindowsWebView2SmokeTests
         }
     }
 
+    private static async Task TestCtrlFAsync(BrowserForm browser, LocalHttpTestServer server)
+    {
+        await EnsureBrowserWebViewAsync(browser);
+        var core = GetCoreForTab(GetActiveTab(browser));
+        string findUrl = server.Url + "find-page";
+        await NavigateCoreAndWaitAsync(browser, core, findUrl);
+
+        var findTextField = typeof(BrowserForm).GetField("_findTextBox", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (findTextField == null)
+            throw new InvalidOperationException("The v1.5 find bar was not found.");
+        LogKeyDiagnostic("After navigation: source=" + core.Source + ", WebView.ContainsFocus=" +
+            ((WebView2)GetWebViewForTab(GetActiveTab(browser))).ContainsFocus + ", findTextBoxField=" + (findTextField.GetValue(browser) != null));
+        await FocusPageInputAndSendKeysAsync(browser, core, "^f");
+        try
+        {
+            await WaitUntilAsync(() => findTextField.GetValue(browser) is TextBox, 5000);
+        }
+        catch (Exception ex)
+        {
+            var currentInput = findTextField.GetValue(browser) as TextBox;
+            var findFormField = typeof(BrowserForm).GetField("_findForm", BindingFlags.Instance | BindingFlags.NonPublic);
+            var currentForm = findFormField == null ? null : findFormField.GetValue(browser) as Form;
+            LogKeyDiagnostic("Waiting for findTextBox failed: " + ex.GetType().Name + ": " + ex.Message +
+                ", inputFieldSet=" + (currentInput != null) + ", formExists=" + (currentForm != null) +
+                ", formVisible=" + (currentForm != null && currentForm.Visible) + ", status=" +
+                ((Label)typeof(BrowserForm).GetField("_statusLabel", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(browser)).Text);
+            throw;
+        }
+        var findText = findTextField.GetValue(browser) as TextBox;
+        if (findText == null || findText.FindForm() == null || !findText.FindForm().Visible)
+            throw new InvalidOperationException("Ctrl+F did not create its find bar input.");
+        LogKeyDiagnostic("Find bar appeared: formVisible=" + findText.FindForm().Visible + ", inputVisible=" + findText.Visible +
+            ", inputFocused=" + findText.Focused + ", inputHandle=" + (findText.IsHandleCreated ? findText.Handle.ToString() : "<none>"));
+        findText.Text = "needle";
+        await WaitUntilAsync(() => core.Find.MatchCount >= 2, 5000);
+        if (core.Find.MatchCount < 2)
+            throw new InvalidOperationException("The v1.5 find bar did not match repeated text in the page.");
+        var closeFind = findText.FindForm();
+        if (closeFind != null)
+            closeFind.Close();
+        Console.WriteLine("PASS: Ctrl+F custom find bar finds and highlights page text.");
+    }
+
     private static void FocusWebViewAndSendKeys(BrowserForm browser, string sequence)
     {
         var view = GetWebViewForTab(GetActiveTab(browser)) as WebView2;
@@ -433,8 +487,22 @@ internal static class WindowsWebView2SmokeTests
             throw new InvalidOperationException("The active WebView did not retain keyboard focus before sending " + sequence +
                 "; visible=" + view.Visible + ", enabled=" + view.Enabled + ", canFocus=" + view.CanFocus +
                 ", browserActive=" + browser.ContainsFocus + ".");
+        bool logThisShortcut = KeyDiagnosticsEnabled && String.Equals(sequence, "^f", StringComparison.OrdinalIgnoreCase);
+        if (logThisShortcut)
+        {
+            var focusedWindow = GetFocus();
+            LogKeyDiagnostic("Before SendKeys: sequence=" + sequence + ", browserContainsFocus=" + browser.ContainsFocus +
+                ", activeFormIsBrowser=" + Object.ReferenceEquals(Form.ActiveForm, browser) + ", view.ContainsFocus=" + view.ContainsFocus +
+                ", view.Focused=" + view.Focused + ", foregroundHwnd=" + GetForegroundWindow() +
+                ", nativeFocusHwnd=" + focusedWindow + ", nativeFocusIsWebViewChild=" +
+                (focusedWindow == view.Handle || IsChild(view.Handle, focusedWindow)) + ", viewHwnd=" + view.Handle);
+        }
         SendKeys.SendWait(sequence);
         Application.DoEvents();
+        if (logThisShortcut)
+            LogKeyDiagnostic("After SendKeys/DoEvents: sequence=" + sequence + ", browserContainsFocus=" + browser.ContainsFocus +
+                ", view.ContainsFocus=" + view.ContainsFocus + ", nativeFocusHwnd=" + GetFocus() +
+                ", findTextBoxFieldSet=" + (typeof(BrowserForm).GetField("_findTextBox", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(browser) != null));
     }
 
     private static async Task FocusPageInputAndSendKeysAsync(BrowserForm browser, CoreWebView2 core, string sequence)
@@ -442,6 +510,8 @@ internal static class WindowsWebView2SmokeTests
         string focusedElement = await core.ExecuteScriptAsync("document.getElementById('editor').focus(); document.activeElement.id");
         if (!String.Equals(focusedElement, "\"editor\"", StringComparison.Ordinal))
             throw new InvalidOperationException("The test page input did not receive DOM focus before sending " + sequence + ": " + focusedElement);
+        if (KeyDiagnosticsEnabled && String.Equals(sequence, "^f", StringComparison.OrdinalIgnoreCase))
+            LogKeyDiagnostic("Page script focus: activeElement=" + focusedElement + ", source=" + core.Source);
         FocusWebViewAndSendKeys(browser, sequence);
     }
 
@@ -926,17 +996,23 @@ internal static class WindowsWebView2SmokeTests
                 home.Refresh();
                 var samplePoints = new[]
                 {
-                    new Point(5, 5),
-                    new Point(Math.Max(0, home.Width - 10), 5),
-                    new Point(5, Math.Max(0, home.Height - 10)),
-                    new Point(Math.Max(0, home.Width - 10), Math.Max(0, home.Height - 10))
+                    new Point(16, 16),
+                    new Point(Math.Max(16, home.Width - 16), 16),
+                    new Point(16, Math.Max(16, home.Height - 16)),
+                    new Point(Math.Max(16, home.Width - 16), Math.Max(16, home.Height - 16))
                 };
                 var screenPixelsBeforeResume = new Color[samplePoints.Length];
-                for (var index = 0; index < samplePoints.Length; index++)
+                var renderedPixelsBeforeResume = new Color[samplePoints.Length];
+                using (var baselineFrame = new Bitmap(home.Width, home.Height))
                 {
-                    screenPixelsBeforeResume[index] = CaptureScreenPixel(home, samplePoints[index]);
-                    Console.WriteLine("HOME RESUME baseline screen pixel[" + index.ToString(System.Globalization.CultureInfo.InvariantCulture) +"] at " +
-                        samplePoints[index] + "=" + screenPixelsBeforeResume[index]);
+                    home.DrawToBitmap(baselineFrame, new Rectangle(Point.Empty, home.Size));
+                    for (var index = 0; index < samplePoints.Length; index++)
+                    {
+                        screenPixelsBeforeResume[index] = CaptureScreenPixel(home, samplePoints[index]);
+                        renderedPixelsBeforeResume[index] = baselineFrame.GetPixel(samplePoints[index].X, samplePoints[index].Y);
+                        Console.WriteLine("HOME RESUME baseline screen pixel[" + index.ToString(System.Globalization.CultureInfo.InvariantCulture) +"] at " +
+                            samplePoints[index] + "=" + screenPixelsBeforeResume[index] + ", DrawToBitmap=" + renderedPixelsBeforeResume[index]);
+                    }
                 }
                 int paintsBeforeResume = paintCount;
                 Console.WriteLine("HOME RESUME baseline: browserVisible=" + browser.Visible +
@@ -970,33 +1046,24 @@ internal static class WindowsWebView2SmokeTests
                     for (var index = 0; index < samplePoints.Length; index++)
                     {
                         var screenAfterResume = CaptureScreenPixel(home, samplePoints[index]);
+                        var renderedAfterResume = frame.GetPixel(samplePoints[index].X, samplePoints[index].Y);
                         Console.WriteLine("HOME RESUME pixel[" + index.ToString(System.Globalization.CultureInfo.InvariantCulture) +"] at " +
                             samplePoints[index] + ": before=" + screenPixelsBeforeResume[index] +
-                            ", screenAfter=" + screenAfterResume + ", DrawToBitmap=" + frame.GetPixel(samplePoints[index].X, samplePoints[index].Y));
+                            ", screenAfter=" + screenAfterResume + ", DrawToBitmapBefore=" + renderedPixelsBeforeResume[index] +
+                            ", DrawToBitmapAfter=" + renderedAfterResume);
+                        const int screenTolerance = 8;
+                        const int renderTolerance = 2;
+                        if (Math.Abs(screenPixelsBeforeResume[index].R - screenAfterResume.R) > screenTolerance ||
+                            Math.Abs(screenPixelsBeforeResume[index].G - screenAfterResume.G) > screenTolerance ||
+                            Math.Abs(screenPixelsBeforeResume[index].B - screenAfterResume.B) > screenTolerance)
+                            throw new InvalidOperationException("The visible homepage screen pixel changed across hide/resume at " +
+                                samplePoints[index] + "; before=" + screenPixelsBeforeResume[index] + ", after=" + screenAfterResume + ".");
+                        if (Math.Abs(renderedPixelsBeforeResume[index].R - renderedAfterResume.R) > renderTolerance ||
+                            Math.Abs(renderedPixelsBeforeResume[index].G - renderedAfterResume.G) > renderTolerance ||
+                            Math.Abs(renderedPixelsBeforeResume[index].B - renderedAfterResume.B) > renderTolerance)
+                            throw new InvalidOperationException("The DrawToBitmap homepage pixel changed across hide/resume at " +
+                                samplePoints[index] + "; before=" + renderedPixelsBeforeResume[index] + ", after=" + renderedAfterResume + ".");
                     }
-                    var sample = samplePoints[3];
-                    var actual = frame.GetPixel(sample.X, sample.Y);
-                    try
-                    {
-                        var screenPoint = home.PointToScreen(sample);
-                        using (var screenFrame = new Bitmap(1, 1))
-                        using (var graphics = Graphics.FromImage(screenFrame))
-                        {
-                            graphics.CopyFromScreen(screenPoint, Point.Empty, new Size(1, 1));
-                            Console.WriteLine("HOME RESUME pixel comparison: DrawToBitmap=" + actual +
-                                ", screen=" + screenFrame.GetPixel(0, 0) + ", point=" + screenPoint);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine("HOME RESUME screen pixel unavailable: " + ex.GetType().Name + ": " + ex.Message);
-                    }
-                    const int tolerance = 40;
-                    if (Math.Abs(actual.R - expected.R) > tolerance ||
-                        Math.Abs(actual.G - expected.G) > tolerance ||
-                        Math.Abs(actual.B - expected.B) > tolerance)
-                        throw new InvalidOperationException("The homepage wallpaper was not repainted after resume; expected " +
-                            expected + ", got " + actual + ".");
                 }
 
                 Console.WriteLine("PASS: home view and wallpaper repainted after hide/resume.");
