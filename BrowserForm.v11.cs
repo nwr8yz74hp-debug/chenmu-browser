@@ -1064,13 +1064,13 @@ namespace ChenmuBrowser
                 "到了 v1.2，浏览器开始照顾更长久的使用习惯：可选的本机会话恢复、兼容 Chrome 与 Edge 的书签导入导出，以及彼此独立的站点例外与省流设置。v1.3 又把 CHENMU Reader 带进工具栏，让常见文档也能留在本机、留在熟悉的窗口里阅读。" + Environment.NewLine + Environment.NewLine +
                 "v1.4 把心思放在边界与可靠性：收紧 Reader 的本地文件访问，加入跨重启的下载记录、可调整的历史保留、逐站点默认拒绝权限、可选的阅读位置恢复与本地壁纸。之后的每次修补，也继续照看窗口恢复、主页重绘与更新说明这些容易被忽略、却影响每天体验的小地方。" + Environment.NewLine + Environment.NewLine +
                 "v1.5 继续补齐常用能力：更可靠的网页历史导航、本地解压扩展管理、页内查找、每标签缩放、最近关闭标签恢复，以及网页 PDF 保存与 PNG 截图。v1.5.1 与 v1.5.2 让离线问候和切回前台后的主页恢复更细致；v1.5.3 进一步修复了切回前台时新标签页偶发白屏。现在，v1.5.4 将这些日常功能与稳定性修复一并收拢，作为 v1 系列最后一版。" + Environment.NewLine + Environment.NewLine +
-                "而现在，v1.5 LTS 为 v1 系列郑重收笔。它不意味着每一步都惊天动地，而是把一路做过的功能、修过的细节和对轻量易用的坚持，一起收拢起来。当前版本仍是测试版，请以实际验证结果为准。谢谢你让这款浏览器有机会从第一版走到这里。后续 v2.0 将作为独立版本线另行规划。" +
-                Environment.NewLine + Environment.NewLine + "本次更新实际交付" + Environment.NewLine;
+                "而现在，v1.5 LTS 为 v1 系列郑重收笔。它不意味着每一步都惊天动地，而是把一路做过的功能、修过的细节和对轻量易用的坚持，一起收拢起来。当前版本仍是测试版，请以实际验证结果为准。谢谢你让这款浏览器有机会从第一版走到这里。后续 v2.0 将作为独立版本线另行规划。";
 
             var notes = String.IsNullOrWhiteSpace(currentReleaseNotes)
                 ? "本次更新说明暂不可用。"
                 : currentReleaseNotes.Trim();
-            return journey + notes;
+            return "本次更新实际交付" + Environment.NewLine + notes + Environment.NewLine + Environment.NewLine +
+                "CHENMU Browser v1 的历程" + Environment.NewLine + journey;
         }
     }
 }

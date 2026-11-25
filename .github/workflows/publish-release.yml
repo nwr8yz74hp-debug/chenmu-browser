@@ -116,7 +116,7 @@ jobs:
           if ($headingIndex -lt 0) { throw 'The v1.5.4 release-notes section is missing.' }
           $visual = Describe-Outcome $env:HOME_VISUAL_OUTCOME
           $smoke = Describe-Outcome $env:WEBVIEW2_SMOKE_OUTCOME
-          $status = "- 测试版风险提示：Windows 首页视觉测试${visual}；WebView2 安全与 v1.5 功能 smoke ${smoke}。安装器升级与发布包校验状态请查看 GitHub 测试版发布页；未明确标为通过的项目不可视为通过。建议使用前备份数据。"
+          $status = "- 测试版风险提示：Windows 首页视觉测试${visual}；WebView2 安全与 v1.5 功能 smoke ${smoke}。构建此安装包时静默升级与发布包校验尚未完成，最终结果请查看 GitHub 测试版发布页；未明确标为通过的项目不可视为通过。建议使用前备份数据。"
           $lines.Insert($headingIndex + 1, $status)
           [System.IO.File]::WriteAllLines($path, $lines.ToArray(), [System.Text.UTF8Encoding]::new($false))
 
@@ -198,7 +198,7 @@ jobs:
             $smoke = Describe-Outcome $env:WEBVIEW2_SMOKE_OUTCOME
             $upgrade = Describe-Outcome $env:SILENT_UPGRADE_OUTCOME
             $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-            $summary = "# ⚠️ 测试版：请先备份数据`n`n此版本按所有者要求提前提供测试，**不是正式稳定版**。v1.5.3 仍是最新正式版；应用内自动更新不会主动推送本测试版。`n`n- Windows 首页视觉测试：**$visual**`n- Windows WebView2 安全及 v1.5 功能 smoke：**$smoke**`n- 从 v1.0.13 静默升级：**$upgrade**`n- Windows 安装器构建及发布包/校验文件生成：**通过**（运行情况不等于所有安装环境均已验证）。`n`n任何未通过或未完成的项目都不能视为通过。请查看 [本次构建与验证日志]($runUrl)。`n`n"
+            $summary = "# ⚠️ 测试版：请先备份数据`n`n此版本按所有者要求提供测试，**不是正式稳定版**。为让现有浏览器发现更新，它被标记为 GitHub Latest；这不表示测试版已成为稳定版。`n`n- Windows 首页视觉测试：**$visual**`n- Windows WebView2 安全及 v1.5 功能 smoke：**$smoke**`n- 从 v1.0.13 静默升级：**$upgrade**`n- Windows 安装器构建及发布包/校验文件生成：**通过**（运行情况不等于所有安装环境均已验证）。`n`n任何未通过或未完成的项目都不能视为通过。请查看 [本次构建与验证日志]($runUrl)。`n`n"
             $releaseNotes = $summary + $releaseNotes
           } elseif ($env:WEBVIEW2_SMOKE_OUTCOME -ne 'success' -and $env:GITHUB_REF_NAME -ne 'v1.5.2') {
             $releaseNotes += "`n`n> **验证状态：** Windows WebView2 安全与 v1.5 功能 smoke 检查在发布前未通过或未完成。本版本按所有者要求提前发布；请勿将这项检查视为已通过。 [查看本次发布工作流]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID)。"
@@ -209,7 +209,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -eq 'v1.5.2') { $releaseTitle += '（测试版）' }
           if ($env:GITHUB_REF_NAME -eq 'v1.5.4') { $releaseTitle = 'CHENMU Browser v1.5 LTS（v1.5.4 测试版）' }
           $options = @()
-          if ($env:GITHUB_REF_NAME -eq 'v1.5.4') { $options += '--prerelease' }
+          if ($env:GITHUB_REF_NAME -eq 'v1.5.4') { $options += '--latest' }
           gh release create "$env:GITHUB_REF_NAME" `
             "dist/CHENMU-Browser-Setup-x64.exe" `
             "dist/CHENMU-Browser-Windows-x64.zip" `
