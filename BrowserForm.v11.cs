@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Drawing;
 using System.Text;
+using Interlocked = System.Threading.Interlocked;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
@@ -17,6 +18,9 @@ namespace ChenmuBrowser
         private const string SoumuSearchUrlPrefix = "https://duckduckgo.com/html/?q=";
         private readonly Dictionary<CoreWebView2, string> _pageAnimationScriptIds =
             new Dictionary<CoreWebView2, string>();
+        private readonly Dictionary<CoreWebView2, long> _pageAnimationRegistrationVersions =
+            new Dictionary<CoreWebView2, long>();
+        private long _pageAnimationRegistrationSequence;
         private readonly Timer _homeGreetingTimer = new Timer();
         private int _historyRetentionDays = 90;
         private int _downloadHistoryRetentionDays = 30;
@@ -767,6 +771,18 @@ namespace ChenmuBrowser
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
+                if (_allowedHosts.Contains(host))
+                {
+                    refresh();
+                    hostBox.Clear();
+                    return;
+                }
+                if (_allowedHosts.Count >= MaximumAllowedHosts)
+                {
+                    MessageBox.Show(dialog, "允许列表最多保存 " + MaximumAllowedHosts.ToString(CultureInfo.InvariantCulture) + " 个域名。",
+                        "站点允许列表", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
                 if (_allowedHosts.Add(host))
                     SavePreferences();
                 refresh();
@@ -828,20 +844,53 @@ namespace ChenmuBrowser
                 "(document.head||document.documentElement).appendChild(s);}catch(e){}})();";
         }
 
-        private async void RegisterPageAnimationScript(CoreWebView2 core)
+        private async Task RegisterPageAnimationScriptAsync(CoreWebView2 core)
         {
+            string scriptId = null;
+            if (core == null || !_pageAnimationsEnabled)
+                return;
+            var registrationVersion = Interlocked.Increment(ref _pageAnimationRegistrationSequence);
+            _pageAnimationRegistrationVersions[core] = registrationVersion;
             try
             {
-                if (core == null || !_pageAnimationsEnabled)
+                scriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(BuildPageAnimationScript(true));
+                long currentVersion;
+                if (IsDisposed || Disposing || !_pageAnimationsEnabled || FindTabForCore(core) == null ||
+                    !_pageAnimationRegistrationVersions.TryGetValue(core, out currentVersion) ||
+                    currentVersion != registrationVersion)
+                {
+                    try { core.RemoveScriptToExecuteOnDocumentCreated(scriptId); }
+                    catch { }
                     return;
-                var scriptId = await core.AddScriptToExecuteOnDocumentCreatedAsync(BuildPageAnimationScript(true));
-                if (IsDisposed || Disposing)
-                    return;
-                if (!_pageAnimationsEnabled)
-                    core.RemoveScriptToExecuteOnDocumentCreated(scriptId);
-                else
-                    _pageAnimationScriptIds[core] = scriptId;
+                }
+                string previousScriptId;
+                if (_pageAnimationScriptIds.TryGetValue(core, out previousScriptId))
+                {
+                    _pageAnimationScriptIds.Remove(core);
+                    try { core.RemoveScriptToExecuteOnDocumentCreated(previousScriptId); }
+                    catch { }
+                }
+                _pageAnimationScriptIds[core] = scriptId;
             }
+            catch
+            {
+                long currentVersion;
+                if (_pageAnimationRegistrationVersions.TryGetValue(core, out currentVersion) &&
+                    currentVersion == registrationVersion)
+                    _pageAnimationRegistrationVersions.Remove(core);
+            }
+        }
+
+        private void RemovePageAnimationScript(CoreWebView2 core)
+        {
+            if (core == null)
+                return;
+            _pageAnimationRegistrationVersions.Remove(core);
+            string scriptId;
+            if (!_pageAnimationScriptIds.TryGetValue(core, out scriptId))
+                return;
+            _pageAnimationScriptIds.Remove(core);
+            try { core.RemoveScriptToExecuteOnDocumentCreated(scriptId); }
             catch { }
         }
 
@@ -852,15 +901,9 @@ namespace ChenmuBrowser
                 var core = tab.WebView == null ? null : tab.WebView.CoreWebView2;
                 if (core == null)
                     continue;
-                string scriptId;
-                if (_pageAnimationScriptIds.TryGetValue(core, out scriptId))
-                {
-                    try { core.RemoveScriptToExecuteOnDocumentCreated(scriptId); }
-                    catch { }
-                    _pageAnimationScriptIds.Remove(core);
-                }
+                RemovePageAnimationScript(core);
                 if (_pageAnimationsEnabled)
-                    RegisterPageAnimationScript(core);
+                    _ = RegisterPageAnimationScriptAsync(core);
                 try { var ignored = core.ExecuteScriptAsync(BuildPageAnimationScript(_pageAnimationsEnabled)); }
                 catch { }
             }
@@ -882,8 +925,7 @@ namespace ChenmuBrowser
                 if (!Version.TryParse(versionText.TrimStart('v'), out noticeVersion) || noticeVersion != UpdateService.CurrentVersion)
                     return;
                 var notes = ReadInstalledReleaseNotes(noticeVersion);
-                MessageBox.Show(this, UpdateNoticeContent.BuildMessage(noticeVersion, notes),
-                    "CHENMU Browser 更新完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowUpdateNoticeDialog(noticeVersion, notes);
             }
             catch { }
         }
@@ -899,6 +941,136 @@ namespace ChenmuBrowser
                     File.ReadAllText(path, Encoding.UTF8), noticeVersion);
             }
             catch { return String.Empty; }
+        }
+
+        private void ShowUpdateNoticeDialog(Version noticeVersion, string currentReleaseNotes)
+        {
+            var isFinalV1 = UpdateNoticeContent.IsFinalV1Lts(noticeVersion);
+            var editionName = UpdateNoticeContent.GetEditionName(noticeVersion);
+            var dialog = new Form
+            {
+                Text = "CHENMU Browser · " + editionName,
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowInTaskbar = false,
+                ClientSize = new Size(700, 610),
+                MinimumSize = new Size(640, 520),
+                Font = Font,
+                BackColor = Color.White
+            };
+
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                BackColor = Color.White,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 142));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
+
+            var banner = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(34, 58, 83) };
+            var brand = new Label
+            {
+                Text = "CHENMU BROWSER   ·   UPDATE STORY",
+                AutoSize = true,
+                Location = new Point(28, 17),
+                ForeColor = Color.FromArgb(184, 209, 229),
+                Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold, GraphicsUnit.Point)
+            };
+            var headline = new Label
+            {
+                Text = isFinalV1 ? "从第一版走到 v1.5 LTS" : "一路迭代，继续向前",
+                AutoSize = true,
+                Location = new Point(27, 43),
+                ForeColor = Color.White,
+                Font = new Font(Font.FontFamily, 21F, FontStyle.Bold, GraphicsUnit.Point)
+            };
+            var subtitle = new Label
+            {
+                Text = "把日常浏览做得更轻、更稳、更顺手。谢谢你一路同行。",
+                AutoSize = true,
+                Location = new Point(29, 99),
+                ForeColor = Color.FromArgb(220, 230, 238)
+            };
+            banner.Controls.Add(brand);
+            banner.Controls.Add(headline);
+            banner.Controls.Add(subtitle);
+
+            var contentPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.White,
+                Padding = new Padding(26, 20, 26, 16)
+            };
+            var content = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None,
+                BackColor = Color.White,
+                ForeColor = Color.FromArgb(46, 56, 67),
+                Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Regular, GraphicsUnit.Point),
+                DetectUrls = false,
+                ScrollBars = RichTextBoxScrollBars.Vertical,
+                Text = BuildUpdateJourneyText(noticeVersion, currentReleaseNotes)
+            };
+            contentPanel.Controls.Add(content);
+
+            var footer = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(247, 249, 251) };
+            var versionLabel = new Label
+            {
+                Text = isFinalV1
+                    ? "本次程序版本 v" + noticeVersion.ToString(3) + "   ·   长效版名称 v1.5 LTS"
+                    : "本次程序版本 v" + noticeVersion.ToString(3),
+                AutoSize = true,
+                Location = new Point(24, 25),
+                ForeColor = Color.FromArgb(103, 114, 125)
+            };
+            var closeButton = new Button
+            {
+                Text = "继续使用 CHENMU Browser",
+                DialogResult = DialogResult.OK,
+                Size = new Size(190, 38),
+                Location = new Point(494, 16),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(41, 91, 132),
+                ForeColor = Color.White,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right
+            };
+            closeButton.FlatAppearance.BorderSize = 0;
+            footer.Controls.Add(versionLabel);
+            footer.Controls.Add(closeButton);
+
+            layout.Controls.Add(banner, 0, 0);
+            layout.Controls.Add(contentPanel, 0, 1);
+            layout.Controls.Add(footer, 0, 2);
+            dialog.Controls.Add(layout);
+            dialog.AcceptButton = closeButton;
+            dialog.CancelButton = closeButton;
+            dialog.ShowDialog(this);
+        }
+
+        private static string BuildUpdateJourneyText(Version noticeVersion, string currentReleaseNotes)
+        {
+            var journey =
+                "从无到有，不是一夜之间。CHENMU Browser 从第一份 Windows 浏览器程序起步，先把打开网页、回到主页和窗口操作这些日常小事一点点安顿好。" + Environment.NewLine + Environment.NewLine +
+                "v1.0 的早期版本添上标签浏览与下载管理，之后不断修整主页、窗口和更新流程。看起来只是几处布局与细节，却让一扇刚刚打开的浏览器窗口，慢慢变成每天都能安心使用的工具。" + Environment.NewLine + Environment.NewLine +
+                "到了 v1.2，浏览器开始照顾更长久的使用习惯：可选的本机会话恢复、兼容 Chrome 与 Edge 的书签导入导出，以及彼此独立的站点例外与省流设置。v1.3 又把 CHENMU Reader 带进工具栏，让常见文档也能留在本机、留在熟悉的窗口里阅读。" + Environment.NewLine + Environment.NewLine +
+                "v1.4 把心思放在边界与可靠性：收紧 Reader 的本地文件访问，加入跨重启的下载记录、可调整的历史保留、逐站点默认拒绝权限、可选的阅读位置恢复与本地壁纸。之后的每次修补，也继续照看窗口恢复、主页重绘与更新说明这些容易被忽略、却影响每天体验的小地方。" + Environment.NewLine + Environment.NewLine +
+                "v1.5 继续补齐常用能力：更可靠的网页历史导航、本地解压扩展管理、页内查找、每标签缩放、最近关闭标签恢复，以及网页 PDF 保存与 PNG 截图。v1.5.1 与 v1.5.2 让离线问候和切回前台后的主页恢复更细致；v1.5.3 进一步修复了切回前台时新标签页偶发白屏。现在，v1.5.4 将这些日常功能与稳定性修复一并收拢，作为 v1 系列最后一版。" + Environment.NewLine + Environment.NewLine +
+                "而现在，v1.5 LTS 为 v1 系列郑重收笔。它不意味着每一步都惊天动地，而是把这些年做过的功能、修过的细节和对轻量易用的坚持，一起留在一个更稳妥的版本里。谢谢你让这款浏览器有机会从第一版走到这里。后续 v2.0 将作为独立版本线另行规划。" +
+                Environment.NewLine + Environment.NewLine + "本次更新实际交付" + Environment.NewLine;
+
+            var notes = String.IsNullOrWhiteSpace(currentReleaseNotes)
+                ? "本次更新说明暂不可用。"
+                : currentReleaseNotes.Trim();
+            return journey + notes;
         }
     }
 }

@@ -100,12 +100,16 @@ internal static class WindowsWebView2SmokeTests
                             }
                             else
                             {
+                                Console.WriteLine("START: browsing-data cleanup with no initialized tab CoreWebView2.");
+                                await TestClearBrowsingDataWithoutInitializedCoreAsync(browser);
                                 Console.WriteLine("START: wallpaper menu lifecycle.");
                                 TestWallpaperMenuLifecycle(browser);
                                 Console.WriteLine("START: navigation history.");
                                 await TestV15NavigationHistoryAsync(browser);
                                 Console.WriteLine("START: find, zoom and recently closed tabs.");
                                 await TestV15FindZoomAndRecentlyClosedAsync(browser);
+                                Console.WriteLine("START: page-animation script cleanup on tab close.");
+                                await TestPageAnimationScriptCleanupAsync(browser);
                                 Console.WriteLine("START: local extensions.");
                                 await TestV15ExtensionsAsync(browser, root);
                                 Console.WriteLine("START: PDF/PNG save dialogs.");
@@ -181,14 +185,23 @@ internal static class WindowsWebView2SmokeTests
 
         var helperType = typeof(BrowserForm).Assembly.GetType("ChenmuBrowser.UpdateNoticeContent", true);
         var readMethod = helperType.GetMethod("ReadCurrentReleaseNotes", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-        var buildMethod = helperType.GetMethod("BuildMessage", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-        if (readMethod == null || buildMethod == null)
+        var storyMethod = typeof(BrowserForm).GetMethod("BuildUpdateJourneyText", BindingFlags.Static | BindingFlags.NonPublic);
+        if (readMethod == null || storyMethod == null)
             throw new InvalidOperationException("The current release-notice content helpers were not found.");
 
         string notes = readMethod.Invoke(null, new object[] { File.ReadAllText(releaseNotesPath, Encoding.UTF8), currentVersion }) as string;
         if (String.IsNullOrWhiteSpace(notes))
             throw new InvalidOperationException("The copied release notes did not contain the current v" + currentVersion.ToString(3) + " section.");
-        return buildMethod.Invoke(null, new object[] { currentVersion, notes }) as string;
+        return storyMethod.Invoke(null, new object[] { currentVersion, notes }) as string;
+    }
+
+    private static string GetExpectedUpdateNoticeTitle(Version currentVersion)
+    {
+        var helperType = typeof(BrowserForm).Assembly.GetType("ChenmuBrowser.UpdateNoticeContent", true);
+        var editionMethod = helperType.GetMethod("GetEditionName", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+        if (editionMethod == null)
+            throw new InvalidOperationException("The browser edition-name helper was not found.");
+        return "CHENMU Browser · " + (string)editionMethod.Invoke(null, new object[] { currentVersion });
     }
 
     private static System.Windows.Forms.Timer StartUpdateNoticeDialogValidation(BrowserForm browser, Version currentVersion)
@@ -229,7 +242,8 @@ internal static class WindowsWebView2SmokeTests
                 return;
             }
 
-            var dialog = FindWindow("#32770", "CHENMU Browser 更新完成");
+            var expectedTitle = GetExpectedUpdateNoticeTitle(currentVersion);
+            var dialog = FindWindow(null, expectedTitle);
             if (dialog != IntPtr.Zero)
             {
                 observedDialog = dialog;
@@ -245,37 +259,22 @@ internal static class WindowsWebView2SmokeTests
                     };
                     EnumChildWindows(dialog, callback, IntPtr.Zero);
                     var message = String.Join(Environment.NewLine, text);
-                    string[] staleReleaseContent =
-                    {
-                        "已更新至 v1.5.1",
-                        "已更新至 v1.5.0",
-                        "首页新增 72 条离线日常问候",
-                        "修复前进/返回历史导航",
-                        "更新完成弹窗误显示过往版本更新内容",
-                        "切回前台时多余的窗口标题栏重算",
-                        "ContextMenuStrip 已释放异常"
-                    };
-                    var staleContent = staleReleaseContent.FirstOrDefault(item => message.IndexOf(item, StringComparison.Ordinal) >= 0);
-                    if (message.IndexOf(expectedMessage, StringComparison.Ordinal) < 0 || staleContent != null)
-                        throw new InvalidOperationException("The visible update dialog did not contain only the current v" +
-                            currentVersion.ToString(3) + " changelog. Expected: " + expectedMessage + " Actual: " + message);
+                    if (message.IndexOf("从第一份 Windows 浏览器程序起步", StringComparison.Ordinal) < 0 ||
+                        message.IndexOf("v1.5 LTS 为 v1 系列郑重收笔", StringComparison.Ordinal) < 0 ||
+                        message.IndexOf("本次更新实际交付", StringComparison.Ordinal) < 0 ||
+                        message.IndexOf(expectedMessage, StringComparison.Ordinal) < 0)
+                        throw new InvalidOperationException("The visible branded update story did not contain the verified v1 history and current changelog. Expected: " + expectedMessage + " Actual: " + message);
 
                     _updateNoticeValidated = true;
-                    Console.WriteLine("PASS: visible v" + currentVersion.ToString(3) + " update dialog contains only the current Chinese changelog.");
+                    Console.WriteLine("PASS: visible branded update dialog title, v1 history, v1.5 LTS story and current Chinese changelog.");
                 }
                 catch (Exception ex)
                 {
                     _failure = ex;
                     Console.Error.WriteLine(ex);
                 }
-                var okButton = GetDlgItem(dialog, 1);
                 closeRequested = true;
                 closeRetryAt = DateTime.UtcNow.AddSeconds(2);
-                if (okButton != IntPtr.Zero)
-                    PostMessage(okButton, 0x00F5, IntPtr.Zero, IntPtr.Zero);
-                else
-                    Console.Error.WriteLine("Update notice OK button was not found; posting IDOK and WM_CLOSE asynchronously.");
-                PostMessage(dialog, 0x0111, new IntPtr(1), IntPtr.Zero);
                 PostMessage(dialog, 0x0010, IntPtr.Zero, IntPtr.Zero);
                 return;
             }
@@ -325,6 +324,95 @@ internal static class WindowsWebView2SmokeTests
             throw new InvalidOperationException("The wallpaper menu could not be reopened after a menu-item click.");
 
         Console.WriteLine("PASS: wallpaper ContextMenuStrip remains reusable after closing and is disposed with BrowserForm.");
+    }
+
+    private static async Task TestClearBrowsingDataWithoutInitializedCoreAsync(BrowserForm browser)
+    {
+        using (var server = new LocalHttpTestServer())
+        {
+            var activeTab = GetActiveTab(browser);
+            var webViewProperty = activeTab.GetType().GetProperty("WebView", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var activeView = webViewProperty == null ? null : webViewProperty.GetValue(activeTab, null) as WebView2;
+            if (activeView != null && activeView.CoreWebView2 != null)
+                throw new InvalidOperationException("The no-Core cleanup test must start before any browser tab is initialized.");
+
+            var environmentMethod = typeof(BrowserForm).GetMethod("GetWebViewEnvironmentAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            var viewportField = typeof(BrowserForm).GetField("_viewport", BindingFlags.Instance | BindingFlags.NonPublic);
+            var environmentTask = environmentMethod == null ? null : environmentMethod.Invoke(browser, null) as Task<CoreWebView2Environment>;
+            var viewport = viewportField == null ? null : viewportField.GetValue(browser) as Control;
+            if (environmentTask == null || viewport == null)
+                throw new InvalidOperationException("The browser environment or viewport was not available for profile cleanup smoke.");
+            var environment = await environmentTask;
+
+            using (var seedView = new WebView2 { Visible = false, Size = new Size(1, 1) })
+            {
+                viewport.Controls.Add(seedView);
+                try
+                {
+                    await seedView.EnsureCoreWebView2Async(environment);
+                    var cookie = seedView.CoreWebView2.CookieManager.CreateCookie(
+                        "chenmuClearProbe", "present", new Uri(server.Url).Host, "/");
+                    seedView.CoreWebView2.CookieManager.AddOrUpdateCookie(cookie);
+                    var seeded = await seedView.CoreWebView2.CookieManager.GetCookiesAsync(server.Url);
+                    if (!seeded.Any(item => item.Name == "chenmuClearProbe"))
+                        throw new InvalidOperationException("The profile cleanup probe cookie was not stored before cleanup.");
+                }
+                finally { viewport.Controls.Remove(seedView); }
+            }
+
+            var clearMethod = typeof(BrowserForm).GetMethod("ClearBrowsingDataForCurrentProfileAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+            var clearTask = clearMethod == null ? null : clearMethod.Invoke(browser, null) as Task;
+            if (clearTask == null)
+                throw new InvalidOperationException("The browser profile cleanup operation was not found.");
+            await clearTask;
+
+            using (var verifyView = new WebView2 { Visible = false, Size = new Size(1, 1) })
+            {
+                viewport.Controls.Add(verifyView);
+                try
+                {
+                    await verifyView.EnsureCoreWebView2Async(environment);
+                    var remaining = await verifyView.CoreWebView2.CookieManager.GetCookiesAsync(server.Url);
+                    if (remaining.Any(item => item.Name == "chenmuClearProbe"))
+                        throw new InvalidOperationException("The profile cleanup operation left its probe cookie behind.");
+                }
+                finally { viewport.Controls.Remove(verifyView); }
+            }
+        }
+        Console.WriteLine("PASS: browsing data cleanup initializes the shared profile when no tab has a WebView2 core and removes its cookie.");
+    }
+
+    private static async Task TestPageAnimationScriptCleanupAsync(BrowserForm browser)
+    {
+        var createTab = typeof(BrowserForm).GetMethod("CreateNewTab", BindingFlags.Instance | BindingFlags.NonPublic);
+        var closeTab = typeof(BrowserForm).GetMethod("CloseTab", BindingFlags.Instance | BindingFlags.NonPublic);
+        var register = typeof(BrowserForm).GetMethod("RegisterPageAnimationScriptAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var scriptsField = typeof(BrowserForm).GetField("_pageAnimationScriptIds", BindingFlags.Instance | BindingFlags.NonPublic);
+        var animationsField = typeof(BrowserForm).GetField("_pageAnimationsEnabled", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (createTab == null || closeTab == null || register == null || scriptsField == null || animationsField == null)
+            throw new InvalidOperationException("The page-animation lifecycle implementation was not found.");
+
+        animationsField.SetValue(browser, true);
+        createTab.Invoke(browser, null);
+        await EnsureBrowserWebViewAsync(browser);
+        var tab = GetActiveTab(browser);
+        var core = GetCoreForTab(tab);
+        var registerTask = register.Invoke(browser, new object[] { core }) as Task;
+        var scripts = scriptsField.GetValue(browser) as IDictionary<CoreWebView2, string>;
+        if (registerTask == null || scripts == null)
+            throw new InvalidOperationException("The page-animation script registration state was not available.");
+        await registerTask;
+        if (!scripts.ContainsKey(core))
+            throw new InvalidOperationException("The live tab's page-animation script was not registered.");
+
+        var isPrivate = tab.GetType().GetProperty("IsPrivate", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (isPrivate != null)
+            isPrivate.SetValue(tab, true, null);
+        closeTab.Invoke(browser, new[] { tab });
+        if (scripts.ContainsKey(core))
+            throw new InvalidOperationException("Closing a tab left its CoreWebView2 in the page-animation script dictionary.");
+
+        Console.WriteLine("PASS: closing a tab removes its page-animation script and CoreWebView2 dictionary reference.");
     }
 
     private static async Task TestV15NavigationHistoryAsync(BrowserForm browser)

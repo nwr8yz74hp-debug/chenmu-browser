@@ -19,6 +19,7 @@
     <Compile Include="../BrowserHistoryStorage.cs" Link="BrowserHistoryStorage.cs" />
     <Compile Include="../DownloadHistoryStorage.cs" Link="DownloadHistoryStorage.cs" />
     <Compile Include="../ReaderPathPolicy.cs" Link="ReaderPathPolicy.cs" />
+    <Compile Include="../ReaderDocumentLoader.cs" Link="ReaderDocumentLoader.cs" />
     <Compile Include="../ReaderPositionStorage.cs" Link="ReaderPositionStorage.cs" />
     <Compile Include="../SitePermissionStorage.cs" Link="SitePermissionStorage.cs" />
     <Compile Include="../HomeGreetingProvider.cs" Link="HomeGreetingProvider.cs" />

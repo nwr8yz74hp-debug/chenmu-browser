@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -71,6 +72,21 @@ internal static class BrowserLogicTests
         Assert(parsed[1].Title == "A bold title", "标题内标签被安全移除");
         Assert(parsed[1].Url.Contains("x=1&y=2"), "读取单引号属性和实体网址");
         Assert(BookmarkHtmlTransfer.Parse("<html>no bookmarks</html>").Count == 0, "空 HTML 可安全处理");
+        Assert(BookmarkHtmlTransfer.Parse("<A data-HREF='https://wrong.example'>误导属性</A>").Count == 0,
+            "不会把 data-HREF 误识别为真实书签地址");
+        Assert(BookmarkHtmlTransfer.Parse("<A x-HREF='https://wrong.example'>误导属性</A>").Count == 0,
+            "不会把连字符属性误识别为真实书签地址");
+        var realHref = BookmarkHtmlTransfer.Parse("<A data-HREF='https://wrong.example' HREF='https://right.example'>正确地址</A>");
+        Assert(realHref.Count == 1 && realHref[0].Url == "https://right.example/",
+            "带 data-HREF 时仍读取独立的真实 HREF 属性");
+        AssertThrows<InvalidDataException>(
+            () => BookmarkHtmlTransfer.Parse(new string('x', BookmarkHtmlTransfer.MaximumInputCharacters + 1)),
+            "书签解析器拒绝超过字符上限的输入");
+        var manyBookmarks = new StringBuilder();
+        for (var index = 0; index <= BookmarkHtmlTransfer.MaximumImportedBookmarks; index++)
+            manyBookmarks.Append("<A HREF=\"https://b").Append(index).Append(".example/\">item</A>");
+        Assert(BookmarkHtmlTransfer.Parse(manyBookmarks.ToString()).Count == BookmarkHtmlTransfer.MaximumImportedBookmarks,
+            "书签 HTML 导入最多返回 5,000 条");
     }
 
     private static void TestDomainRules()
@@ -89,6 +105,12 @@ internal static class BrowserLogicTests
             "域名后缀匹配需要分隔点");
         Assert(!DomainRuleMatcher.ShouldBlock("doubleclick.net", null, null), "空规则表不拦截");
         Assert(DomainRuleMatcher.NormalizeHost("https://example.com/path").Length == 0, "拒绝带协议和路径的主机规则");
+        var idn = new System.Globalization.IdnMapping();
+        var punycode = idn.GetAscii("例え.テスト").ToLowerInvariant();
+        Assert(DomainRuleMatcher.NormalizeHost("例え.テスト") == punycode,
+            "国际化域名统一转换为 Punycode 规范形式");
+        Assert(DomainRuleMatcher.Matches("cdn.例え.テスト", punycode),
+            "Unicode 请求主机与 Punycode 域名规则等价匹配");
     }
 
     private static void TestAtomicTextFile()
@@ -286,8 +308,78 @@ internal static class BrowserLogicTests
             Assert(!SitePermissionStorage.IsAllowed(read, "https://sub.example.com", SitePermissionKind.Camera), "授权不继承到子域名");
             Assert(!SitePermissionStorage.IsAllowed(read, "https://example.com", SitePermissionKind.Microphone), "未勾选的权限默认拒绝");
             Assert(!SitePermissionStorage.IsAllowed(read, "http://example.com", SitePermissionKind.Camera), "HTTP 站点保持默认拒绝");
+
+            File.WriteAllText(path, new string('x', SitePermissionStorage.MaximumSerializedBytes + 1), Encoding.UTF8);
+            Assert(SitePermissionStorage.Read(path).Count == 0,
+                "超过 256 KiB 的站点权限文件安全拒绝读取且不产生规则");
         }
         finally { TryDelete(root); }
+    }
+
+    private static void TestReaderDocumentArchiveLimits()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var pptxPath = Path.Combine(root, "overflow-slide-number.pptx");
+            const string slideXml = "<p:sld xmlns:p='http://schemas.openxmlformats.org/presentationml/2006/main' " +
+                "xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'><p:cSld><p:spTree><p:sp>" +
+                "<p:txBody><a:p><a:r><a:t>hello</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>";
+            using (var stream = File.Create(pptxPath))
+            using (var archive = new ZipArchive(stream, ZipArchiveMode.Create))
+            {
+                WriteZipEntry(archive, "ppt/slides/slide1.xml", slideXml);
+                WriteZipEntry(archive, "ppt/slides/slide999999999999999999999999.xml", slideXml);
+            }
+            var document = DocumentLoader.Load(pptxPath);
+            Assert(document.Pages.Count == 1 && document.Pages[0].Html.Contains("hello"),
+                "超出整数范围的 PPTX 幻灯片编号被忽略，不会阻止有效幻灯片打开");
+
+            var crowdedPath = Path.Combine(root, "too-many-entries.epub");
+            using (var stream = File.Create(crowdedPath))
+            using (var archive = new ZipArchive(stream, ZipArchiveMode.Create))
+            {
+                for (var index = 0; index <= 10000; index++)
+                    archive.CreateEntry("item" + index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            AssertThrows<InvalidDataException>(() => DocumentLoader.Load(crowdedPath),
+                "Reader 在处理压缩包前拒绝超过 10,000 个条目");
+
+            var oversizedTextPath = Path.Combine(root, "oversized.txt");
+            File.WriteAllText(oversizedTextPath, new string('x', 4000001), new UTF8Encoding(false));
+            AssertThrows<InvalidDataException>(() => DocumentLoader.Load(oversizedTextPath),
+                "Reader 拒绝超过 4,000,000 字符的文本文件");
+
+            var markdownPath = Path.Combine(root, "too-many-lines.md");
+            File.WriteAllText(markdownPath, new string('\n', 100000), new UTF8Encoding(false));
+            AssertThrows<InvalidDataException>(() => DocumentLoader.Load(markdownPath),
+                "Reader 拒绝超过行数上限的 Markdown 文件");
+
+            var csvPath = Path.Combine(root, "wide.csv");
+            File.WriteAllText(csvPath, new string(',', 1000), new UTF8Encoding(false));
+            var csv = DocumentLoader.Load(csvPath);
+            Assert(csv.Pages[0].Html.Split(new[] { "<td>" }, StringSplitOptions.None).Length - 1 == 80,
+                "CSV 超宽行只为实际显示的 80 列分配单元格");
+
+            var largeDocxPath = Path.Combine(root, "oversized-xml.docx");
+            const string wordNamespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+            var largeWordXml = "<w:document xmlns:w='" + wordNamespace + "'><w:body><w:p><w:r><w:t>" +
+                new string('x', 8 * 1024 * 1024) + "</w:t></w:r></w:p></w:body></w:document>";
+            using (var stream = File.Create(largeDocxPath))
+            using (var archive = new ZipArchive(stream, ZipArchiveMode.Create))
+                WriteZipEntry(archive, "word/document.xml", largeWordXml);
+            AssertThrows<InvalidDataException>(() => DocumentLoader.Load(largeDocxPath),
+                "Reader 拒绝单个超过 8 MiB 的压缩文档 XML 资源");
+        }
+        finally { TryDelete(root); }
+    }
+
+    private static void WriteZipEntry(ZipArchive archive, string name, string content)
+    {
+        var entry = archive.CreateEntry(name);
+        using (var stream = entry.Open())
+        using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+            writer.Write(content);
     }
 
     private static void TestReaderPositionStorage()
@@ -416,6 +508,19 @@ internal static class BrowserLogicTests
 
     private static void TestUpdateNoticeVersionIsolation()
     {
+        Assert(UpdateNoticeContent.GetEditionName(new Version(1, 5, 4)) == "v1.5 LTS",
+            "v1.5.4 程序版本以 v1.5 LTS 品牌名展示");
+        Assert(!UpdateNoticeContent.IsFinalV1Lts(new Version(1, 5, 3)) &&
+            UpdateNoticeContent.GetEditionName(new Version(1, 5, 3)) == "v1.5.3",
+            "历史 v1.5.3 不误标为最终 LTS 版");
+
+        var ltsNotes = "# CHENMU Browser v1.5.4 更新说明\n- 当前 LTS 修复。\n" +
+            "# CHENMU Browser v1.5.3 更新说明\n- 上一版主页修复。\n";
+        Assert(UpdateNoticeContent.ReadCurrentReleaseNotes(ltsNotes, new Version(1, 5, 4)) == "• 当前 LTS 修复。",
+            "v1.5.4 更新弹窗只读取当前 LTS 区块");
+        Assert(UpdateNoticeContent.ReadCurrentReleaseNotes(ltsNotes, new Version(1, 5, 3)) == "• 上一版主页修复。",
+            "v1.5.3 更新说明继续作为历史区块可读取");
+
         var cumulativeNotes = "# CHENMU Browser v1.4.2 更新说明\n" +
             "- 修复新标签页壁纸被白色遮罩洗淡的问题；缓存适配当前窗口尺寸的壁纸绘制帧，减少重开、换图和重绘时的白屏闪烁与卡顿。\n" +
             "# CHENMU Browser v1.4.1 更新说明\n" +
@@ -463,6 +568,7 @@ internal static class BrowserLogicTests
         TestBrowserHistoryOversizedRead();
         TestDownloadHistoryStorage();
         TestSitePermissionStorage();
+        TestReaderDocumentArchiveLimits();
         TestReaderPositionStorage();
         TestHomeGreetings();
         TestV15RecentlyClosedTabsAndZoom();

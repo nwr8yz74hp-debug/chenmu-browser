@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Threading.Tasks;
@@ -28,6 +29,11 @@ namespace ChenmuBrowser
         private bool _webViewReady;
         private bool _loading;
         private bool _initializing;
+        private readonly HashSet<string> _temporaryRootsAwaitingNavigation =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private string _retirementNavigationTarget;
+        private bool _hasRetirementNavigationId;
+        private ulong _retirementNavigationId;
         private int _pageIndex;
 
         public ReaderView(Func<Task<CoreWebView2Environment>> getEnvironment,
@@ -36,6 +42,7 @@ namespace ChenmuBrowser
             _getEnvironment = getEnvironment ?? throw new ArgumentNullException(nameof(getEnvironment));
             _getSavedPageIndex = getSavedPageIndex ?? delegate { return 0; };
             _savePageIndex = savePageIndex ?? delegate { };
+            ReaderTemporaryDirectoryCleanup.CleanupStaleProcessRoots();
             Dock = DockStyle.Fill;
             BackColor = Color.FromArgb(246, 248, 251);
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
@@ -66,7 +73,10 @@ namespace ChenmuBrowser
                     return;
                 ConfigureWebView();
                 _webViewReady = true;
-                ShowWelcome();
+                if (_document == null)
+                    ShowWelcome();
+                else
+                    RenderCurrentPage();
             }
             catch (Exception ex)
             {
@@ -207,14 +217,46 @@ namespace ChenmuBrowser
                 {
                     if (!ReaderPathPolicy.IsAllowedLocalPath(uri.LocalPath, _allowedFileRoot))
                         args.Cancel = true;
+                    else
+                        MatchRetirementNavigation(args);
                     return;
                 }
                 if (uri.Scheme.Equals("about", StringComparison.OrdinalIgnoreCase) ||
                     uri.Scheme.Equals("data", StringComparison.OrdinalIgnoreCase) ||
                     uri.Scheme.Equals("edge-pdf", StringComparison.OrdinalIgnoreCase))
+                {
+                    MatchRetirementNavigation(args);
                     return;
+                }
                 args.Cancel = true;
             };
+            core.NavigationCompleted += delegate(object sender, CoreWebView2NavigationCompletedEventArgs args)
+            {
+                if (!_hasRetirementNavigationId || args.NavigationId != _retirementNavigationId)
+                    return;
+                _hasRetirementNavigationId = false;
+                if (args.IsSuccess)
+                    RetirePreviousTemporaryRoots();
+            };
+        }
+
+        private void MatchRetirementNavigation(CoreWebView2NavigationStartingEventArgs args)
+        {
+            if (args == null || _temporaryRootsAwaitingNavigation.Count == 0 ||
+                String.IsNullOrWhiteSpace(_retirementNavigationTarget) ||
+                !IsSameNavigationTarget(args.Uri, _retirementNavigationTarget))
+                return;
+            _retirementNavigationId = args.NavigationId;
+            _hasRetirementNavigationId = true;
+        }
+
+        private static bool IsSameNavigationTarget(string first, string second)
+        {
+            Uri firstUri;
+            Uri secondUri;
+            return Uri.TryCreate(first, UriKind.Absolute, out firstUri) &&
+                Uri.TryCreate(second, UriKind.Absolute, out secondUri) &&
+                String.Equals(firstUri.AbsoluteUri, secondUri.AbsoluteUri, StringComparison.OrdinalIgnoreCase);
         }
 
         private async Task ChooseAndOpenAsync()
@@ -245,12 +287,18 @@ namespace ChenmuBrowser
                     TryDeleteDirectory(loaded.TemporaryRoot);
                     return;
                 }
+                ReaderTemporaryDirectoryCleanup.RegisterActive(loaded.TemporaryRoot);
                 _document = loaded;
                 _currentDocumentPath = Path.GetFullPath(path);
                 _pageIndex = loaded.Pages.Count == 0
                     ? 0
                     : Math.Max(0, Math.Min(_getSavedPageIndex(_currentDocumentPath, loaded.Pages.Count), loaded.Pages.Count - 1));
                 _activeTemporaryRoot = loaded.TemporaryRoot;
+                if (!String.IsNullOrWhiteSpace(previousTemporaryRoot) &&
+                    !String.Equals(previousTemporaryRoot, _activeTemporaryRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    _temporaryRootsAwaitingNavigation.Add(previousTemporaryRoot);
+                }
                 _allowedFileRoot = !String.IsNullOrWhiteSpace(loaded.TemporaryRoot)
                     ? loaded.TemporaryRoot
                     : Path.GetDirectoryName(path);
@@ -259,9 +307,6 @@ namespace ChenmuBrowser
                 if (_webViewReady)
                     RenderCurrentPage();
                 SaveCurrentPosition();
-                if (!String.IsNullOrWhiteSpace(previousTemporaryRoot) &&
-                    !String.Equals(previousTemporaryRoot, _activeTemporaryRoot, StringComparison.OrdinalIgnoreCase))
-                    TryDeleteDirectory(previousTemporaryRoot);
             }
             catch (Exception ex)
             {
@@ -318,9 +363,40 @@ namespace ChenmuBrowser
                 return;
             var page = _document.Pages[_pageIndex];
             if (!String.IsNullOrWhiteSpace(page.FilePath))
-                _view.Source = new Uri(Path.GetFullPath(page.FilePath));
+            {
+                var filePath = Path.GetFullPath(page.FilePath);
+                PrepareRetirementForNavigation(new Uri(filePath).AbsoluteUri);
+                _view.Source = new Uri(filePath);
+            }
             else
+            {
+                PrepareRetirementForNavigation("about:blank");
                 _view.NavigateToString(WrapHtml(page.Html ?? String.Empty, page.Title ?? _document.Title));
+            }
+        }
+
+        private void PrepareRetirementForNavigation(string target)
+        {
+            _hasRetirementNavigationId = false;
+            _retirementNavigationId = 0;
+            _retirementNavigationTarget = _temporaryRootsAwaitingNavigation.Count == 0 ? null : target;
+        }
+
+        private void RetirePreviousTemporaryRoots()
+        {
+            foreach (var root in new List<string>(_temporaryRootsAwaitingNavigation))
+            {
+                if (String.Equals(root, _activeTemporaryRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    _temporaryRootsAwaitingNavigation.Remove(root);
+                    continue;
+                }
+                _temporaryRootsAwaitingNavigation.Remove(root);
+                ReaderTemporaryDirectoryCleanup.ReleaseActive(root);
+            }
+            _retirementNavigationTarget = null;
+            _hasRetirementNavigationId = false;
+            _retirementNavigationId = 0;
         }
 
         private void UpdateNavigation()
@@ -393,22 +469,18 @@ namespace ChenmuBrowser
             {
                 SaveCurrentPosition();
                 try { _view.Dispose(); } catch { }
-                TryDeleteDirectory(_activeTemporaryRoot);
+                ReaderTemporaryDirectoryCleanup.ReleaseActive(_activeTemporaryRoot);
                 _activeTemporaryRoot = null;
+                foreach (var root in _temporaryRootsAwaitingNavigation)
+                    ReaderTemporaryDirectoryCleanup.ReleaseActive(root);
+                _temporaryRootsAwaitingNavigation.Clear();
             }
             base.Dispose(disposing);
         }
 
         private static void TryDeleteDirectory(string path)
         {
-            if (String.IsNullOrWhiteSpace(path))
-                return;
-            try
-            {
-                if (Directory.Exists(path))
-                    Directory.Delete(path, true);
-            }
-            catch { }
+            ReaderTemporaryDirectoryCleanup.ScheduleDelete(path);
         }
     }
 }

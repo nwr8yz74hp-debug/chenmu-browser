@@ -54,5 +54,17 @@ namespace ChenmuBrowser
             return "已更新至 v" + versionText + "。" + Environment.NewLine + Environment.NewLine +
                 "更新内容：" + Environment.NewLine + notes;
         }
+
+        public static bool IsFinalV1Lts(Version version)
+        {
+            return version != null && version.Major == 1 && version.Minor == 5 && version.Build == 4;
+        }
+
+        public static string GetEditionName(Version version)
+        {
+            if (version == null)
+                throw new ArgumentNullException("version");
+            return IsFinalV1Lts(version) ? "v1.5 LTS" : "v" + version.ToString(3);
+        }
     }
 }

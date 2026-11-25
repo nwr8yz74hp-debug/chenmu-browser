@@ -425,19 +425,30 @@ namespace ChenmuBrowser
             {
                 if (picker.ShowDialog(this) != DialogResult.OK)
                     return;
+                var destinationPath = picker.FileName;
+                var temporaryPath = GetTemporaryExportPath(destinationPath);
                 try
                 {
                     _statusLabel.Text = "正在将网页保存为 PDF…";
-                    var saved = await core.PrintToPdfAsync(picker.FileName, null);
-                    if (!saved || !File.Exists(picker.FileName))
+                    var saved = await core.PrintToPdfAsync(temporaryPath, null);
+                    if (IsDisposed || Disposing)
+                        return;
+                    if (!saved || !File.Exists(temporaryPath) || new FileInfo(temporaryPath).Length == 0)
                         throw new IOException("WebView2 未能完成 PDF 输出。");
-                    _statusLabel.Text = "网页已保存为 PDF：" + Path.GetFileName(picker.FileName);
+                    CommitCompletedExportFile(temporaryPath, destinationPath);
+                    _statusLabel.Text = "网页已保存为 PDF：" + Path.GetFileName(destinationPath);
                 }
                 catch (Exception ex)
                 {
+                    if (IsDisposed || Disposing)
+                        return;
                     _statusLabel.Text = "无法保存网页 PDF：" + ex.Message;
                     MessageBox.Show(this, "无法将网页保存为 PDF：\r\n" + ex.Message, "保存 PDF",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                finally
+                {
+                    TryDeleteExportFile(temporaryPath);
                 }
             }
         }
@@ -462,6 +473,8 @@ namespace ChenmuBrowser
             {
                 if (picker.ShowDialog(this) != DialogResult.OK)
                     return;
+                var destinationPath = picker.FileName;
+                var temporaryPath = GetTemporaryExportPath(destinationPath);
                 try
                 {
                     _statusLabel.Text = "正在截图当前可见网页…";
@@ -471,18 +484,49 @@ namespace ChenmuBrowser
                         await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);
                         imageBytes = stream.ToArray();
                     }
+                    if (IsDisposed || Disposing)
+                        return;
                     if (imageBytes.Length < 8 || imageBytes[0] != 0x89 || imageBytes[1] != 0x50 || imageBytes[2] != 0x4E || imageBytes[3] != 0x47)
                         throw new InvalidDataException("网页截图没有生成有效的 PNG 数据。");
-                    File.WriteAllBytes(picker.FileName, imageBytes);
-                    _statusLabel.Text = "当前可见网页已截图为 PNG：" + Path.GetFileName(picker.FileName);
+                    File.WriteAllBytes(temporaryPath, imageBytes);
+                    CommitCompletedExportFile(temporaryPath, destinationPath);
+                    _statusLabel.Text = "当前可见网页已截图为 PNG：" + Path.GetFileName(destinationPath);
                 }
                 catch (Exception ex)
                 {
+                    if (IsDisposed || Disposing)
+                        return;
                     _statusLabel.Text = "无法截图当前网页：" + ex.Message;
                     MessageBox.Show(this, "无法截图当前可见网页：\r\n" + ex.Message, "保存 PNG 截图",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
+                finally
+                {
+                    TryDeleteExportFile(temporaryPath);
+                }
             }
+        }
+
+        private static string GetTemporaryExportPath(string destinationPath)
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(destinationPath));
+            return Path.Combine(directory, "chenmu-export-" + Guid.NewGuid().ToString("N") + ".tmp");
+        }
+
+        private static void CommitCompletedExportFile(string temporaryPath, string destinationPath)
+        {
+            if (!File.Exists(temporaryPath) || new FileInfo(temporaryPath).Length == 0)
+                throw new IOException("导出文件为空，未覆盖原文件。");
+            if (File.Exists(destinationPath))
+                File.Replace(temporaryPath, destinationPath, null);
+            else
+                File.Move(temporaryPath, destinationPath);
+        }
+
+        private static void TryDeleteExportFile(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); }
+            catch { }
         }
 
         private static string GetSuggestedPageFileName(CoreWebView2 core, string extension)
@@ -506,6 +550,8 @@ namespace ChenmuBrowser
             }
             catch (Exception ex)
             {
+                if (IsDisposed || Disposing)
+                    return;
                 _statusLabel.Text = "无法启动扩展管理：" + ex.Message;
                 MessageBox.Show(this, "无法启动 WebView2 扩展：\r\n" + ex.Message, "浏览器扩展",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -554,9 +600,18 @@ namespace ChenmuBrowser
                 layout.Controls.Add(warning, 0, 2);
                 dialog.Controls.Add(layout);
                 dialog.AcceptButton = close;
+                bool dialogClosed = false;
+                dialog.FormClosed += delegate { dialogClosed = true; };
+                Func<bool> dialogUsable = delegate
+                {
+                    return !dialogClosed && !dialog.IsDisposed && !dialog.Disposing && !list.IsDisposed &&
+                        !list.Disposing && !IsDisposed && !Disposing;
+                };
 
                 Action updateButtons = delegate
                 {
+                    if (!dialogUsable())
+                        return;
                     var selected = list.SelectedItem as ExtensionListItem;
                     toggle.Enabled = selected != null;
                     remove.Enabled = selected != null;
@@ -565,63 +620,133 @@ namespace ChenmuBrowser
                 };
                 Func<Task> refreshList = async delegate
                 {
+                    if (!dialogUsable())
+                        return;
                     try
                     {
                         var extensions = await profile.GetBrowserExtensionsAsync();
+                        if (!dialogUsable())
+                            return;
                         list.BeginUpdate();
-                        list.Items.Clear();
-                        foreach (var extension in extensions)
-                            list.Items.Add(new ExtensionListItem(extension));
-                        list.EndUpdate();
+                        try
+                        {
+                            list.Items.Clear();
+                            foreach (var extension in extensions)
+                                list.Items.Add(new ExtensionListItem(extension));
+                        }
+                        finally
+                        {
+                            if (!list.IsDisposed && !list.Disposing)
+                                list.EndUpdate();
+                        }
                         updateButtons();
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show(dialog, "无法读取扩展列表：\r\n" + ex.Message, "浏览器扩展",
-                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        if (dialogUsable())
+                            MessageBox.Show(dialog, "无法读取扩展列表：\r\n" + ex.Message, "浏览器扩展",
+                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 };
                 list.SelectedIndexChanged += delegate { updateButtons(); };
-                refresh.Click += async delegate { await refreshList(); };
-                install.Click += async delegate { await InstallExtensionFromDialogAsync(profile, dialog, refreshList); };
+                refresh.Click += async delegate
+                {
+                    if (!dialogUsable())
+                        return;
+                    refresh.Enabled = false;
+                    try { await refreshList(); }
+                    finally { if (dialogUsable()) refresh.Enabled = true; }
+                };
+                install.Click += async delegate
+                {
+                    if (!dialogUsable())
+                        return;
+                    install.Enabled = false;
+                    toggle.Enabled = false;
+                    remove.Enabled = false;
+                    refresh.Enabled = false;
+                    try { await InstallExtensionFromDialogAsync(profile, dialog, refreshList); }
+                    finally
+                    {
+                        if (dialogUsable())
+                        {
+                            install.Enabled = true;
+                            refresh.Enabled = true;
+                            updateButtons();
+                        }
+                    }
+                };
                 toggle.Click += async delegate
                 {
                     var selected = list.SelectedItem as ExtensionListItem;
-                    if (selected == null)
+                    if (selected == null || !dialogUsable())
                         return;
+                    toggle.Enabled = false;
+                    remove.Enabled = false;
+                    install.Enabled = false;
+                    refresh.Enabled = false;
                     try
                     {
                         await selected.Extension.EnableAsync(!selected.Extension.IsEnabled);
+                        if (!dialogUsable())
+                            return;
                         await refreshList();
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show(dialog, "无法更改扩展状态：\r\n" + ex.Message, "浏览器扩展",
-                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        if (dialogUsable())
+                            MessageBox.Show(dialog, "无法更改扩展状态：\r\n" + ex.Message, "浏览器扩展",
+                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    finally
+                    {
+                        if (dialogUsable())
+                        {
+                            install.Enabled = true;
+                            refresh.Enabled = true;
+                            updateButtons();
+                        }
                     }
                 };
                 remove.Click += async delegate
                 {
                     var selected = list.SelectedItem as ExtensionListItem;
-                    if (selected == null)
+                    if (selected == null || !dialogUsable())
                         return;
                     if (MessageBox.Show(dialog, "确定卸载扩展“" + selected.Extension.Name + "”吗？",
                         "卸载浏览器扩展", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
                         return;
+                    toggle.Enabled = false;
+                    remove.Enabled = false;
+                    install.Enabled = false;
+                    refresh.Enabled = false;
                     try
                     {
                         await selected.Extension.RemoveAsync();
+                        if (!dialogUsable())
+                            return;
                         await refreshList();
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show(dialog, "无法卸载扩展：\r\n" + ex.Message, "浏览器扩展",
-                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        if (dialogUsable())
+                            MessageBox.Show(dialog, "无法卸载扩展：\r\n" + ex.Message, "浏览器扩展",
+                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    finally
+                    {
+                        if (dialogUsable())
+                        {
+                            install.Enabled = true;
+                            refresh.Enabled = true;
+                            updateButtons();
+                        }
                     }
                 };
                 ApplyDialogStyle(dialog);
                 await refreshList();
-                dialog.ShowDialog(this);
+                if (dialogUsable())
+                    dialog.ShowDialog(this);
             }
         }
 
@@ -641,7 +766,7 @@ namespace ChenmuBrowser
                 : tab.WebView.CoreWebView2.Profile;
         }
 
-        private async Task InstallExtensionFromDialogAsync(CoreWebView2Profile profile, IWin32Window owner, Func<Task> refreshList)
+        private async Task InstallExtensionFromDialogAsync(CoreWebView2Profile profile, Form owner, Func<Task> refreshList)
         {
             using (var picker = new FolderBrowserDialog { Description = "选择包含 manifest.json 的已解压扩展目录" })
             {
@@ -660,14 +785,18 @@ namespace ChenmuBrowser
                         return;
 
                     await InstallExtensionDirectoryAsync(profile, picker.SelectedPath);
+                    if (owner.IsDisposed || owner.Disposing || IsDisposed || Disposing)
+                        return;
                     if (refreshList != null)
                         await refreshList();
-                    _statusLabel.Text = "扩展已安装；请检查其权限并仅在信任时启用。";
+                    if (!owner.IsDisposed && !owner.Disposing && !IsDisposed && !Disposing)
+                        _statusLabel.Text = "扩展已安装；请检查其权限并仅在信任时启用。";
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show(owner, "无法安装所选扩展：\r\n" + ex.Message, "浏览器扩展",
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    if (!owner.IsDisposed && !owner.Disposing && !IsDisposed && !Disposing)
+                        MessageBox.Show(owner, "无法安装所选扩展：\r\n" + ex.Message, "浏览器扩展",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
         }

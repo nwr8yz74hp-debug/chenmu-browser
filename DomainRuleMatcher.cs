@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace ChenmuBrowser
@@ -14,9 +15,15 @@ namespace ChenmuBrowser
                 return String.Empty;
             if (normalized.Length >= 2 && normalized[0] == '[' && normalized[normalized.Length - 1] == ']')
                 normalized = normalized.Substring(1, normalized.Length - 2);
-            return Uri.CheckHostName(normalized) == UriHostNameType.Unknown
-                ? String.Empty
-                : normalized.ToLowerInvariant();
+            var hostType = Uri.CheckHostName(normalized);
+            if (hostType == UriHostNameType.Unknown)
+                return String.Empty;
+            if (hostType == UriHostNameType.Dns)
+            {
+                try { normalized = new IdnMapping().GetAscii(normalized); }
+                catch { return String.Empty; }
+            }
+            return normalized.ToLowerInvariant();
         }
 
         internal static bool Matches(string requestHost, string ruleHost)

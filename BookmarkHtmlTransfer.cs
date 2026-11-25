@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
@@ -17,6 +18,12 @@ namespace ChenmuBrowser
     internal static class BookmarkHtmlTransfer
     {
         internal const char FolderSeparator = '\u001f';
+        internal const int MaximumInputBytes = 8 * 1024 * 1024;
+        internal const int MaximumInputCharacters = 8 * 1024 * 1024;
+        internal const int MaximumImportedBookmarks = 5000;
+        private const int MaximumFolderDepth = 16;
+        private const int MaximumFolderNameCharacters = 256;
+        private const int MaximumTitleCharacters = 1024;
 
         private static readonly Regex CommentRegex = new Regex("<!--.*?-->",
             RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
@@ -24,7 +31,7 @@ namespace ChenmuBrowser
             "</?DL\\b[^>]*>|<H3\\b[^>]*>.*?</H3\\s*>|<A\\b[^>]*>.*?</A\\s*>",
             RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
         private static readonly Regex AttributeRegex = new Regex(
-            "\\bHREF\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+            "(?:^|\\s)HREF\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
             RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
         private static readonly Regex OpeningTagRegex = new Regex("^<[^>]+>",
             RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
@@ -36,17 +43,25 @@ namespace ChenmuBrowser
             var result = new List<BookmarkTransferItem>();
             if (String.IsNullOrWhiteSpace(html))
                 return result;
+            if (html.Length > MaximumInputCharacters)
+                throw new InvalidDataException("书签 HTML 超过安全解析上限（8 Mi 字符）。");
 
             var source = CommentRegex.Replace(html, String.Empty);
             var folders = new List<string>();
             var folderDlFrames = new Stack<bool>();
             string pendingFolder = null;
+            var overflowDepth = 0;
 
             foreach (Match token in TokenRegex.Matches(source))
             {
                 var value = token.Value;
                 if (value.StartsWith("</DL", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (overflowDepth > 0)
+                    {
+                        overflowDepth--;
+                        continue;
+                    }
                     if (folderDlFrames.Count > 0 && folderDlFrames.Pop() && folders.Count > 0)
                         folders.RemoveAt(folders.Count - 1);
                     pendingFolder = null;
@@ -55,6 +70,17 @@ namespace ChenmuBrowser
 
                 if (value.StartsWith("<DL", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (overflowDepth > 0)
+                    {
+                        overflowDepth++;
+                        continue;
+                    }
+                    if (folderDlFrames.Count >= MaximumFolderDepth)
+                    {
+                        overflowDepth = 1;
+                        pendingFolder = null;
+                        continue;
+                    }
                     var ownsFolder = !String.IsNullOrWhiteSpace(pendingFolder);
                     if (ownsFolder)
                         folders.Add(pendingFolder);
@@ -71,7 +97,7 @@ namespace ChenmuBrowser
                     var rawTitle = closingStart >= contentStart
                         ? value.Substring(contentStart, closingStart - contentStart)
                         : String.Empty;
-                    pendingFolder = CleanText(rawTitle);
+                    pendingFolder = LimitLength(CleanText(rawTitle), MaximumFolderNameCharacters);
                     continue;
                 }
 
@@ -94,6 +120,7 @@ namespace ChenmuBrowser
                 var title = CleanText(rawText);
                 if (String.IsNullOrWhiteSpace(title))
                     title = uri.Host;
+                title = LimitLength(title, MaximumTitleCharacters);
 
                 result.Add(new BookmarkTransferItem
                 {
@@ -101,6 +128,8 @@ namespace ChenmuBrowser
                     Url = uri.AbsoluteUri,
                     FolderPath = String.Join(FolderSeparator.ToString(), folders)
                 });
+                if (result.Count >= MaximumImportedBookmarks)
+                    break;
             }
 
             return result;
@@ -194,6 +223,12 @@ namespace ChenmuBrowser
         private static string CleanText(string value)
         {
             return WebUtility.HtmlDecode(AnyTagRegex.Replace(value ?? String.Empty, String.Empty)).Trim();
+        }
+
+        private static string LimitLength(string value, int maximumLength)
+        {
+            value = value ?? String.Empty;
+            return value.Length <= maximumLength ? value : value.Substring(0, maximumLength);
         }
 
         private sealed class FolderNode

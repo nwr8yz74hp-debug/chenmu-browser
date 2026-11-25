@@ -24,6 +24,7 @@ namespace ChenmuBrowser
     internal static class SitePermissionStorage
     {
         public const int MaximumSites = 200;
+        public const int MaximumSerializedBytes = 256 * 1024;
         private static readonly object Sync = new object();
 
         public static string NormalizeSecureOrigin(string value)
@@ -51,10 +52,12 @@ namespace ChenmuBrowser
             var rules = new List<SitePermissionRule>();
             try
             {
-                if (!File.Exists(path))
+                if (!File.Exists(path) || new FileInfo(path).Length > MaximumSerializedBytes)
                     return rules;
-                foreach (var line in File.ReadAllLines(path, Encoding.UTF8).Take(MaximumSites * 2))
+                foreach (var line in File.ReadLines(path, Encoding.UTF8).Take(MaximumSites * 2))
                 {
+                    if (line.Length > MaximumSerializedBytes)
+                        continue;
                     try
                     {
                         var parts = line.Split('\t');

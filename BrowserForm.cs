@@ -21,6 +21,11 @@ namespace ChenmuBrowser
         private const int DwmwaBorderColor = 34;
         private const int DwmwaCaptionColor = 35;
         private const int DwmwaTextColor = 36;
+        private const int MaximumSettingsFileBytes = 64 * 1024;
+        private const int MaximumSessionFileBytes = 256 * 1024;
+        private const int MaximumBookmarkStoreBytes = 4 * 1024 * 1024;
+        private const int MaximumStoredBookmarks = 20000;
+        private const int MaximumAllowedHosts = 200;
         private const uint SwpNoSize = 0x0001;
         private const uint SwpNoMove = 0x0002;
         private const uint SwpNoZOrder = 0x0004;
@@ -156,6 +161,10 @@ namespace ChenmuBrowser
             {
                 _homeGreetingTimer.Stop();
                 _homeGreetingTimer.Dispose();
+                foreach (var core in _pageAnimationScriptIds.Keys.ToList())
+                    RemovePageAnimationScript(core);
+                foreach (var core in _pageAnimationRegistrationVersions.Keys.ToList())
+                    RemovePageAnimationScript(core);
                 if (_sessionSnapshotQueue != null)
                     _sessionSnapshotQueue.Dispose();
                 if (_historyWriteQueue != null)
@@ -709,7 +718,7 @@ namespace ChenmuBrowser
 #endif
         }
 
-        private void CreateNewTab()
+        private BrowserTab CreateNewTab()
         {
             var tab = new BrowserTab { Title = "新标签页", IsHome = true };
             var header = new Panel
@@ -780,6 +789,7 @@ namespace ChenmuBrowser
             UpdateTabSidebar();
             SwitchToTab(tab);
             FocusAddress();
+            return tab;
         }
 
         private void OpenReader()
@@ -829,6 +839,8 @@ namespace ChenmuBrowser
                 ? tab.WebView.CoreWebView2.Source
                 : tab.SessionUrl;
             _recentlyClosedTabs.Record(closedUrl, tab.Title, tab.ZoomFactor, tab.IsPrivate, tab.IsReader);
+            if (tab.WebView != null && tab.WebView.CoreWebView2 != null)
+                RemovePageAnimationScript(tab.WebView.CoreWebView2);
             _tabs.RemoveAt(index);
             _tabHeaders.Controls.Remove(tab.Header);
             UpdateTabSidebar();
@@ -1706,15 +1718,21 @@ namespace ChenmuBrowser
             return searchUrl + Uri.EscapeDataString(value);
         }
 
-        private async Task NavigateAsync(string input, bool upgradeHttp = false)
+        private async Task NavigateAsync(string input, bool upgradeHttp = false, BrowserTab navigationTab = null)
         {
             var target = NormalizeAddress(input, upgradeHttp);
             if (String.IsNullOrWhiteSpace(target))
                 return;
 
-            if (_activeTab == null)
-                CreateNewTab();
-            var tab = _activeTab;
+            if (navigationTab == null)
+            {
+                if (_activeTab == null)
+                    CreateNewTab();
+                navigationTab = _activeTab;
+            }
+            var tab = navigationTab;
+            if (tab == null || !_tabs.Contains(tab))
+                return;
             if (tab.IsReader)
             {
                 if (tab.ReaderView != null)
@@ -1789,6 +1807,7 @@ namespace ChenmuBrowser
                     throw new OperationCanceledException("标签页已关闭。");
                 await webView.EnsureCoreWebView2Async(environment);
                 ConfigureCoreWebView(webView.CoreWebView2);
+                await RegisterPageAnimationScriptAsync(webView.CoreWebView2);
                 if (tab == _activeTab)
                     _webView = webView;
             }
@@ -1842,7 +1861,6 @@ namespace ChenmuBrowser
             core.Settings.IsZoomControlEnabled = false;
             core.Profile.PreferredTrackingPreventionLevel = CoreWebView2TrackingPreventionLevel.Balanced;
             ApplyTabZoom(core);
-            RegisterPageAnimationScript(core);
             core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             core.WebResourceRequested += Core_WebResourceRequested;
             core.DownloadStarting += Core_DownloadStarting;
@@ -1926,9 +1944,9 @@ namespace ChenmuBrowser
 
         private async void OpenNewTabFromPage(string url)
         {
-            CreateNewTab();
+            var newTab = CreateNewTab();
             if (!String.IsNullOrWhiteSpace(url))
-                await NavigateAsync(url);
+                await NavigateAsync(url, false, newTab);
         }
 
         private void Core_DownloadStarting(object sender, CoreWebView2DownloadStartingEventArgs e)
@@ -2038,18 +2056,7 @@ namespace ChenmuBrowser
             // Address-bar HTTP input is upgraded in NormalizeAddress; existing page history
             // is allowed to complete with its original URL.
             if (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == "about")
-            {
-                if (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
-                {
-                    var ownerTab = FindTabForCore(core);
-                    if (ownerTab != null)
-                    {
-                        ownerTab.SessionUrl = GetSessionUrl(e.Uri);
-                        SaveSessionSnapshot();
-                    }
-                }
                 return;
-            }
 
             e.Cancel = true;
             try
@@ -2363,6 +2370,8 @@ namespace ChenmuBrowser
                     return;
                 try
                 {
+                    if (new FileInfo(picker.FileName).Length > BookmarkHtmlTransfer.MaximumInputBytes)
+                        throw new InvalidDataException("书签 HTML 超过 8 MiB 安全上限；请拆分后再导入。");
                     var parsed = BookmarkHtmlTransfer.Parse(File.ReadAllText(picker.FileName, Encoding.UTF8));
                     if (parsed.Count == 0)
                     {
@@ -2725,13 +2734,7 @@ namespace ChenmuBrowser
 
             try
             {
-                var core = _tabs.Select(tab => tab.WebView == null ? null : tab.WebView.CoreWebView2)
-                    .FirstOrDefault(item => item != null);
-                if (core != null)
-                {
-                    await core.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllProfile);
-                    core.CookieManager.DeleteAllCookies();
-                }
+                await ClearBrowsingDataForCurrentProfileAsync();
                 if (!ClearHistoryEntries())
                 {
                     _statusLabel.Text = "浏览数据已清除，但历史记录未能清除。";
@@ -2742,6 +2745,36 @@ namespace ChenmuBrowser
             catch (Exception ex)
             {
                 MessageBox.Show(this, "清除失败：" + ex.Message, "CHENMU Browser", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private async Task ClearBrowsingDataForCurrentProfileAsync()
+        {
+            var core = _tabs.Select(tab => tab.WebView == null ? null : tab.WebView.CoreWebView2)
+                .FirstOrDefault(item => item != null);
+            if (core != null)
+            {
+                await core.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllProfile);
+                core.CookieManager.DeleteAllCookies();
+                return;
+            }
+
+            var temporaryView = new WebView2 { Visible = false, Size = new Size(1, 1) };
+            _viewport.Controls.Add(temporaryView);
+            try
+            {
+                var environment = await GetWebViewEnvironmentAsync();
+                await temporaryView.EnsureCoreWebView2Async(environment);
+                core = temporaryView.CoreWebView2;
+                if (core == null)
+                    throw new InvalidOperationException("网页配置尚未就绪，无法清理浏览数据。");
+                await core.Profile.ClearBrowsingDataAsync(CoreWebView2BrowsingDataKinds.AllProfile);
+                core.CookieManager.DeleteAllCookies();
+            }
+            finally
+            {
+                _viewport.Controls.Remove(temporaryView);
+                temporaryView.Dispose();
             }
         }
 
@@ -2769,7 +2802,7 @@ namespace ChenmuBrowser
             };
             var version = new Label
             {
-                Text = "版本 v" + UpdateService.CurrentVersion.ToString(3),
+                Text = "版本 " + UpdateNoticeContent.GetEditionName(UpdateService.CurrentVersion),
                 Dock = DockStyle.Top,
                 Height = 42,
                 TextAlign = ContentAlignment.MiddleCenter,
@@ -3006,6 +3039,8 @@ namespace ChenmuBrowser
             {
                 if (!File.Exists(SettingsPath))
                     return;
+                if (new FileInfo(SettingsPath).Length > MaximumSettingsFileBytes)
+                    return;
                 foreach (var line in File.ReadAllLines(SettingsPath))
                 {
                     var parts = line.Split(new[] { '=' }, 2);
@@ -3044,6 +3079,10 @@ namespace ChenmuBrowser
                     {
                         foreach (var item in parts[1].Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
                         {
+                            if (_allowedHosts.Count >= MaximumAllowedHosts)
+                                break;
+                            if (item.Length > 768)
+                                continue;
                             try
                             {
                                 var host = NormalizeHost(Uri.UnescapeDataString(item));
@@ -3087,6 +3126,7 @@ namespace ChenmuBrowser
                     "restoreReaderPosition=" + _restoreReaderPosition,
                     "dataSaver=" + _dataSaver,
                     "allowedHosts=" + String.Join(";", _allowedHosts
+                        .Take(MaximumAllowedHosts)
                         .OrderBy(host => host, StringComparer.OrdinalIgnoreCase)
                         .Select(Uri.EscapeDataString)),
                     "pageAnimations=" + _pageAnimationsEnabled,
@@ -3111,10 +3151,14 @@ namespace ChenmuBrowser
             {
                 if (!File.Exists(SessionPath))
                     return;
+                if (new FileInfo(SessionPath).Length > MaximumSessionFileBytes)
+                    return;
                 var urls = new List<string>();
                 var activeIndex = 0;
                 foreach (var line in File.ReadAllLines(SessionPath))
                 {
+                    if (line.Length > 8192)
+                        continue;
                     if (line.StartsWith("activeIndex=", StringComparison.Ordinal))
                     {
                         Int32.TryParse(line.Substring("activeIndex=".Length), NumberStyles.Integer,
@@ -3164,11 +3208,15 @@ namespace ChenmuBrowser
                 var firstTab = _tabs[0];
                 for (var index = 0; index < urls.Count; index++)
                 {
+                    BrowserTab targetTab;
                     if (index == 0)
+                    {
                         SwitchToTab(firstTab);
+                        targetTab = firstTab;
+                    }
                     else
-                        CreateNewTab();
-                    await NavigateAsync(urls[index]);
+                        targetTab = CreateNewTab();
+                        await NavigateAsync(urls[index], false, targetTab);
                 }
                 if (_tabs.Count > 0)
                     SwitchToTab(_tabs[Math.Min(_startupSessionActiveIndex, urls.Count - 1)]);
@@ -3199,9 +3247,15 @@ namespace ChenmuBrowser
                     // Private tabs are never written to the ordinary browsing-session snapshot.
                     if (tab == null || tab.IsPrivate)
                         continue;
-                    var url = GetSessionUrl(tab.SessionUrl);
-                    if (url == null && tab.WebView != null && tab.WebView.CoreWebView2 != null)
-                        url = GetSessionUrl(tab.WebView.CoreWebView2.Source);
+                    string url = null;
+                    try
+                    {
+                        var core = tab.WebView == null ? null : tab.WebView.CoreWebView2;
+                        url = core == null ? null : GetSessionUrl(core.Source);
+                    }
+                    catch { }
+                    if (url == null)
+                        url = GetSessionUrl(tab.SessionUrl);
                     if (url != null)
                         savedTabs.Add(new KeyValuePair<BrowserTab, string>(tab, url));
                 }
@@ -3246,8 +3300,17 @@ namespace ChenmuBrowser
             {
                 if (!File.Exists(BookmarksPath))
                     return result;
-                foreach (var line in File.ReadAllLines(BookmarksPath))
+                if (new FileInfo(BookmarksPath).Length > MaximumBookmarkStoreBytes)
                 {
+                    _statusLabel.Text = "书签文件超出安全读取上限；未加载现有书签。";
+                    return result;
+                }
+                foreach (var line in File.ReadLines(BookmarksPath))
+                {
+                    if (result.Count >= MaximumStoredBookmarks)
+                        break;
+                    if (line.Length > 16384)
+                        continue;
                     try
                     {
                         var parts = line.Split(new[] { '\t' }, 3);
@@ -3276,9 +3339,35 @@ namespace ChenmuBrowser
         {
             try
             {
-                AtomicTextFile.WriteAllLines(BookmarksPath, bookmarks.Select(b =>
-                    Uri.EscapeDataString(b.Title ?? String.Empty) + "\t" + b.Url + "\t" +
-                    Uri.EscapeDataString(b.FolderPath ?? String.Empty)));
+                if (bookmarks == null || bookmarks.Count > MaximumStoredBookmarks)
+                {
+                    _statusLabel.Text = "书签数量超过本地安全上限（" + MaximumStoredBookmarks.ToString(CultureInfo.InvariantCulture) + " 条），未保存。";
+                    return false;
+                }
+                var lines = new List<string>(bookmarks.Count);
+                long serializedBytes = 0;
+                foreach (var bookmark in bookmarks)
+                {
+                    if (bookmark == null)
+                        continue;
+                    var title = bookmark.Title ?? String.Empty;
+                    var folder = bookmark.FolderPath ?? String.Empty;
+                    var url = bookmark.Url ?? String.Empty;
+                    if (title.Length > 2048 || folder.Length > 4096 || url.Length > 8192)
+                    {
+                        _statusLabel.Text = "书签字段过长，未保存；标题、网址或文件夹路径超出限制。";
+                        return false;
+                    }
+                    var line = Uri.EscapeDataString(title) + "\t" + url + "\t" + Uri.EscapeDataString(folder);
+                    serializedBytes += Encoding.UTF8.GetByteCount(line) + 2;
+                    if (serializedBytes > MaximumBookmarkStoreBytes)
+                    {
+                        _statusLabel.Text = "书签文件超过 4 MiB 安全上限，未保存。";
+                        return false;
+                    }
+                    lines.Add(line);
+                }
+                AtomicTextFile.WriteAllLines(BookmarksPath, lines);
                 return true;
             }
             catch (Exception ex)

@@ -18,6 +18,16 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Read project version for artifact names
+        id: project-version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [xml]$project = Get-Content -LiteralPath 'CHENMU-Browser.csproj' -Raw
+          $version = $project.SelectSingleNode('/Project/PropertyGroup/Version').InnerText.Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Unsafe or missing project version: $version" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
       - name: Set up .NET SDK
         uses: actions/setup-dotnet@v4
         with:
@@ -101,6 +111,16 @@ jobs:
       - name: Package release assets without publishing
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $buildAssets = @(
+            'dist\CHENMU-Browser-Setup-x64.exe',
+            'dist\CHENMU Browser.exe',
+            'dist\WebView2Loader.dll'
+          )
+          foreach ($path in $buildAssets) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Build asset is missing before packaging: $path" }
+            if ((Get-Item -LiteralPath $path).Length -le 0) { throw "Build asset is empty before packaging: $path" }
+          }
           python package-release.py
           if ($LASTEXITCODE -ne 0) { throw 'Release asset packaging failed.' }
           $required = @(
@@ -110,13 +130,43 @@ jobs:
             'dist\SHA256SUMS.txt'
           )
           foreach ($path in $required) {
-            if (-not (Test-Path -LiteralPath $path)) { throw "Required release asset is missing: $path" }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required release asset is missing after packaging: $path" }
+            if ((Get-Item -LiteralPath $path).Length -le 0) { throw "Required release asset is empty after packaging: $path" }
+          }
+          $checksumLines = @(Get-Content -LiteralPath 'dist\SHA256SUMS.txt')
+          if ($checksumLines.Count -ne 3) { throw "SHA256SUMS.txt must contain exactly three lines; got $($checksumLines.Count)." }
+          $expected = @('CHENMU-Browser-Setup-x64.exe', 'CHENMU-Browser-Windows-x64.zip', 'CHENMU-Browser-source.zip')
+          $seen = @{}
+          foreach ($line in $checksumLines) {
+            if ($line -notmatch '^([0-9a-fA-F]{64})  (.+)$') { throw "Malformed SHA256SUMS.txt line: $line" }
+            $name = $Matches[2]
+            if ($expected -notcontains $name) { throw "Unexpected checksum asset: $name" }
+            if ($seen.ContainsKey($name)) { throw "Duplicate checksum asset: $name" }
+            $seen[$name] = $Matches[1].ToLowerInvariant()
+          }
+          foreach ($name in $expected) {
+            if (-not $seen.ContainsKey($name)) { throw "Missing checksum asset: $name" }
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path 'dist' $name)).Hash.ToLowerInvariant()
+            if ($seen[$name] -ne $actual) { throw "Checksum mismatch for $name" }
+          }
+
+      - name: Normalize running-app screenshot filename
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $directory = 'test-artifacts'
+          if (-not (Test-Path -LiteralPath $directory -PathType Container)) { return }
+          $screenshots = @(Get-ChildItem -LiteralPath $directory -File -Filter '*.png')
+          if ($screenshots.Count -eq 1) {
+            $target = Join-Path $directory "CHENMU-Browser-v${{ steps.project-version.outputs.version }}-running-app.png"
+            Move-Item -LiteralPath $screenshots[0].FullName -Destination $target -Force
           }
 
       - name: Upload genuine running-app screenshot
-        if: always()
+        if: always() && steps.project-version.outcome == 'success' && hashFiles('test-artifacts/CHENMU-Browser-v*-running-app.png') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: chenmu-browser-v1.5.0-running-app-screenshot
-          path: test-artifacts/CHENMU-Browser-v1.5.0-running-app.png
+          name: chenmu-browser-v${{ steps.project-version.outputs.version }}-running-app-screenshot
+          path: test-artifacts/CHENMU-Browser-v${{ steps.project-version.outputs.version }}-running-app.png
           if-no-files-found: error
