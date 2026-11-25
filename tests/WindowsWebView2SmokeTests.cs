@@ -866,6 +866,10 @@ internal static class WindowsWebView2SmokeTests
 
         var originalWallpaper = home.BackgroundImage;
         var expected = Color.FromArgb(39, 112, 177);
+        var activeTabField = typeof(BrowserForm).GetField("_activeTab", BindingFlags.Instance | BindingFlags.NonPublic);
+        var activeTab = activeTabField == null ? null : activeTabField.GetValue(browser);
+        var isHomeProperty = activeTab == null ? null : activeTab.GetType().GetProperty("IsHome");
+        var isReaderProperty = activeTab == null ? null : activeTab.GetType().GetProperty("IsReader");
         using (var wallpaper = new Bitmap(1, 1))
         {
             wallpaper.SetPixel(0, 0, expected);
@@ -875,9 +879,20 @@ internal static class WindowsWebView2SmokeTests
             EventHandler activatedHandler = delegate
             {
                 paintsWhenActivatedEventReached = paintCount;
+                activeTab = activeTabField == null ? null : activeTabField.GetValue(browser);
+                isHomeProperty = activeTab == null ? null : activeTab.GetType().GetProperty("IsHome");
+                isReaderProperty = activeTab == null ? null : activeTab.GetType().GetProperty("IsReader");
+                Console.WriteLine("HOME RESUME activated: browserVisible=" + browser.Visible +
+                    ", homeVisible=" + home.Visible + ", activeIsHome=" + (isHomeProperty != null && (bool)isHomeProperty.GetValue(activeTab, null)) +
+                    ", activeIsReader=" + (isReaderProperty != null && (bool)isReaderProperty.GetValue(activeTab, null)) +
+                    ", homeHandle=" + home.IsHandleCreated + ", paintCount=" + paintCount);
                 activated.TrySetResult(true);
             };
-            PaintEventHandler paintHandler = delegate { paintCount++; };
+            PaintEventHandler paintHandler = delegate
+            {
+                paintCount++;
+                Console.WriteLine("HOME RESUME home Paint #" + paintCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            };
             browser.Activated += activatedHandler;
             home.Paint += paintHandler;
             try
@@ -885,12 +900,18 @@ internal static class WindowsWebView2SmokeTests
                 home.BackgroundImage = wallpaper;
                 home.Refresh();
                 int paintsBeforeResume = paintCount;
+                Console.WriteLine("HOME RESUME baseline: browserVisible=" + browser.Visible +
+                    ", homeVisible=" + home.Visible + ", paintCount=" + paintsBeforeResume);
                 browser.Hide();
                 await WaitUntilAsync(() => !browser.Visible, 2000);
                 await Task.Delay(100);
                 browser.Show();
+                Console.WriteLine("HOME RESUME after Show: browserVisible=" + browser.Visible +
+                    ", homeVisible=" + home.Visible + ", paintCount=" + paintCount);
                 browser.Activate();
+                Console.WriteLine("HOME RESUME after Activate: paintCount=" + paintCount);
                 browser.BringToFront();
+                Console.WriteLine("HOME RESUME after BringToFront: paintCount=" + paintCount);
                 if (await Task.WhenAny(activated.Task, Task.Delay(5000)) != activated.Task)
                     throw new TimeoutException("The home view did not reactivate within 5 seconds.");
                 await activated.Task;
