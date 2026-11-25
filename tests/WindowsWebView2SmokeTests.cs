@@ -500,7 +500,7 @@ internal static class WindowsWebView2SmokeTests
             if (!String.Equals((string)snapshot.GetType().GetProperty("Url").GetValue(snapshot, null), new Uri(closedUrl).AbsoluteUri, StringComparison.OrdinalIgnoreCase) ||
                 Math.Abs((double)snapshot.GetType().GetProperty("ZoomFactor").GetValue(snapshot, null) - 1.3) > 0.001)
                 throw new InvalidOperationException("The recent-tab snapshot did not preserve URL and zoom.");
-            FocusWebViewAndSendKeys(browser, "^+t");
+            FocusAddressAndSendKeys(browser, "^+t");
             await WaitUntilAsync(() =>
             {
                 var active = GetActiveTab(browser);
@@ -533,6 +533,24 @@ internal static class WindowsWebView2SmokeTests
             throw new InvalidOperationException("The active WebView did not retain keyboard focus before sending " + sequence +
                 "; visible=" + view.Visible + ", enabled=" + view.Enabled + ", canFocus=" + view.CanFocus +
                 ", browserActive=" + browser.ContainsFocus + ".");
+        SendKeys.SendWait(sequence);
+        Application.DoEvents();
+    }
+
+    private static void FocusAddressAndSendKeys(BrowserForm browser, string sequence)
+    {
+        var addressField = typeof(BrowserForm).GetField("_addressBox", BindingFlags.Instance | BindingFlags.NonPublic);
+        var addressBox = addressField == null ? null : addressField.GetValue(browser) as TextBox;
+        if (addressBox == null || !browser.Visible)
+            throw new InvalidOperationException("Cannot send a browser-level shortcut because the address bar is unavailable.");
+        browser.Activate();
+        browser.BringToFront();
+        SetForegroundWindow(browser.Handle);
+        Application.DoEvents();
+        addressBox.Focus();
+        Application.DoEvents();
+        if (!addressBox.Focused)
+            throw new InvalidOperationException("The address bar did not retain keyboard focus before sending " + sequence + ".");
         SendKeys.SendWait(sequence);
         Application.DoEvents();
     }
