@@ -91,6 +91,7 @@ namespace ChenmuBrowser
         private string _searchEngine = "google";
         private DateTime _lastUpdateCheckUtc = DateTime.MinValue;
         private bool _updateCheckInProgress;
+        private bool _homeViewRefreshPending;
 
         private string SettingsPath { get { return Path.Combine(_dataRoot, "settings.ini"); } }
         private string BookmarksPath { get { return Path.Combine(_dataRoot, "bookmarks.tsv"); } }
@@ -227,8 +228,32 @@ namespace ChenmuBrowser
         private void RefreshVisibleHomeView()
         {
             if (IsDisposed || Disposing || _homeView == null || _homeView.IsDisposed ||
-                !_homeView.Visible || _activeTab == null || !_activeTab.IsHome || _activeTab.IsReader)
+                _activeTab == null || !_activeTab.IsHome || _activeTab.IsReader)
                 return;
+
+            if (!_homeView.Visible)
+            {
+                // Activated can run inside Show before WinForms updates visible state.
+                if (!IsHandleCreated || _homeViewRefreshPending)
+                    return;
+                _homeViewRefreshPending = true;
+                try
+                {
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        _homeViewRefreshPending = false;
+                        if (IsDisposed || Disposing || !Visible || _homeView == null || _homeView.IsDisposed ||
+                            !_homeView.Visible || _activeTab == null || !_activeTab.IsHome || _activeTab.IsReader)
+                            return;
+                        _homeView.Refresh();
+                    });
+                }
+                catch (InvalidOperationException)
+                {
+                    _homeViewRefreshPending = false;
+                }
+                return;
+            }
 
             _homeView.Refresh();
         }

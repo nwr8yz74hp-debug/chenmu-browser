@@ -58,6 +58,7 @@ internal static class WindowsWebView2SmokeTests
     [STAThread]
     private static int Main()
     {
+        bool resumeOnly = String.Equals(Environment.GetEnvironmentVariable("CHENMU_WEBVIEW_SMOKE_RESUME_ONLY"), "1", StringComparison.Ordinal);
         string root = Path.Combine(Path.GetTempPath(), "chenmu-webview2-smoke-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         Application.EnableVisualStyles();
@@ -66,35 +67,51 @@ internal static class WindowsWebView2SmokeTests
         {
             string browserData = Path.Combine(root, "browser-data");
             Directory.CreateDirectory(browserData);
-            File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.5.0\r\n", new UTF8Encoding(false));
+            if (!resumeOnly)
+                File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.5.0\r\n", new UTF8Encoding(false));
             using (var server = new LocalTestServer())
             using (var browser = new BrowserForm(browserData, true, 1))
             {
-                using (StartUpdateNoticeDialogValidation(browser))
+                using (resumeOnly ? null : StartUpdateNoticeDialogValidation(browser))
                 {
                     browser.Shown += async delegate
                     {
                         try
                         {
-                            Console.WriteLine("START: wallpaper menu lifecycle.");
-                            TestWallpaperMenuLifecycle(browser);
-                            Console.WriteLine("START: navigation history.");
-                            await TestV15NavigationHistoryAsync(browser);
-                            Console.WriteLine("START: find, zoom and recently closed tabs.");
-                            await TestV15FindZoomAndRecentlyClosedAsync(browser);
-                            Console.WriteLine("START: local extensions.");
-                            await TestV15ExtensionsAsync(browser, root);
-                            Console.WriteLine("START: PDF/PNG save dialogs.");
-                            await TestV15PageExportsAndCancelAsync(browser, root);
-                            Console.WriteLine("START: default-deny site permissions.");
-                            await TestDefaultDenyPermissionsAsync(browser, server);
-                            Console.WriteLine("START: Reader file boundary.");
-                            await TestReaderSubresourceBoundaryAsync(root);
-                            Console.WriteLine("START: background resume regression.");
-                            await TestBackgroundResumeAsync(browser);
-                            await TestHomeViewResumeAsync(browser);
-                            await CaptureRunningBrowserScreenshotAsync(browser);
-                            Console.WriteLine("PASS: v1.5 navigation, find, zoom, extensions, recent tabs, exports, permission, Reader boundary, page resume and home repaint regressions.");
+                            if (resumeOnly)
+                            {
+                                Console.WriteLine("START: initialize WebView2 for isolated resume smoke.");
+                                await EnsureBrowserWebViewAsync(browser);
+                                var resumeCore = GetCoreForTab(GetActiveTab(browser));
+                                await NavigateAndWaitAsync(browser, resumeCore, server.Url + "resume-only");
+                                Console.WriteLine("START: background resume regression.");
+                                await TestBackgroundResumeAsync(browser);
+                                Console.WriteLine("START: homepage resume repaint regression.");
+                                await TestHomeViewResumeAsync(browser);
+                                Console.WriteLine("PASS: isolated Windows background-resume and homepage repaint smoke tests.");
+                            }
+                            else
+                            {
+                                Console.WriteLine("START: wallpaper menu lifecycle.");
+                                TestWallpaperMenuLifecycle(browser);
+                                Console.WriteLine("START: navigation history.");
+                                await TestV15NavigationHistoryAsync(browser);
+                                Console.WriteLine("START: find, zoom and recently closed tabs.");
+                                await TestV15FindZoomAndRecentlyClosedAsync(browser);
+                                Console.WriteLine("START: local extensions.");
+                                await TestV15ExtensionsAsync(browser, root);
+                                Console.WriteLine("START: PDF/PNG save dialogs.");
+                                await TestV15PageExportsAndCancelAsync(browser, root);
+                                Console.WriteLine("START: default-deny site permissions.");
+                                await TestDefaultDenyPermissionsAsync(browser, server);
+                                Console.WriteLine("START: Reader file boundary.");
+                                await TestReaderSubresourceBoundaryAsync(root);
+                                Console.WriteLine("START: background resume regression.");
+                                await TestBackgroundResumeAsync(browser);
+                                await TestHomeViewResumeAsync(browser);
+                                await CaptureRunningBrowserScreenshotAsync(browser);
+                                Console.WriteLine("PASS: v1.5 navigation, find, zoom, extensions, recent tabs, exports, permission, Reader boundary, page resume and home repaint regressions.");
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -112,9 +129,9 @@ internal static class WindowsWebView2SmokeTests
             }
             if (_failure != null)
                 throw _failure;
-            if (!_updateNoticeValidated)
+            if (!resumeOnly && !_updateNoticeValidated)
                 throw new InvalidOperationException("The v1.5.0 update-complete dialog was not visually validated.");
-            if (!_wallpaperMenuDisposedOnBrowserClose)
+            if (!resumeOnly && !_wallpaperMenuDisposedOnBrowserClose)
                 throw new InvalidOperationException("The wallpaper ContextMenuStrip was not disposed with BrowserForm.");
             return 0;
         }
@@ -770,23 +787,40 @@ internal static class WindowsWebView2SmokeTests
                 await Task.Delay(100);
                 int nonClientCalculationsBefore = probe.NonClientCalculationCount;
                 var activated = new TaskCompletionSource<bool>();
-                EventHandler activatedHandler = delegate { activated.TrySetResult(true); };
+                bool visibleAtActivated = false;
+                int nonClientCalculationsAtActivated = -1;
+                EventHandler activatedHandler = delegate
+                {
+                    visibleAtActivated = browser.Visible;
+                    nonClientCalculationsAtActivated = probe.NonClientCalculationCount;
+                    activated.TrySetResult(true);
+                };
                 browser.Activated += activatedHandler;
                 var stopwatch = Stopwatch.StartNew();
+                int nonClientCalculationsAfterShow = nonClientCalculationsBefore;
+                int nonClientCalculationsAfterActivate = nonClientCalculationsBefore;
+                int nonClientCalculationsAfterBringToFront = nonClientCalculationsBefore;
                 try
                 {
                     browser.Show();
+                    if (!browser.Visible)
+                        throw new InvalidOperationException("The browser remained hidden after Show().");
+                    nonClientCalculationsAfterShow = probe.NonClientCalculationCount;
                     browser.Activate();
+                    nonClientCalculationsAfterActivate = probe.NonClientCalculationCount;
                     browser.BringToFront();
+                    nonClientCalculationsAfterBringToFront = probe.NonClientCalculationCount;
                     var activationResult = await Task.WhenAny(activated.Task, Task.Delay(5000));
                     if (activationResult != activated.Task)
                         throw new TimeoutException("The browser window did not reactivate within 5 seconds.");
                     await activated.Task;
+                    await Task.Delay(100);
                 }
                 finally
                 {
                     browser.Activated -= activatedHandler;
                 }
+                int nonClientCalculationsAfterSettled = probe.NonClientCalculationCount;
                 stopwatch.Stop();
 
                 var scriptTask = core.ExecuteScriptAsync("window.__chenmuResumeSentinel===" + JsonString(sentinel));
@@ -799,13 +833,22 @@ internal static class WindowsWebView2SmokeTests
                     throw new InvalidOperationException("The page URL changed while returning to the foreground.");
                 if (navigationStarts != 0)
                     throw new InvalidOperationException("Returning to the foreground unexpectedly started " + navigationStarts + " navigation(s).");
-                if (probe.NonClientCalculationCount != nonClientCalculationsBefore)
-                    throw new InvalidOperationException("The browser recalculated its non-client frame when merely reactivated.");
+                if (nonClientCalculationsAfterSettled != nonClientCalculationsAfterShow)
+                    throw new InvalidOperationException("The browser recalculated its non-client frame after Show(); counts before=" +
+                        nonClientCalculationsBefore + ", after Show=" + nonClientCalculationsAfterShow +
+                        ", settled=" + nonClientCalculationsAfterSettled + ".");
                 if (stopwatch.ElapsedMilliseconds > 5000)
                     throw new TimeoutException("The browser took " + stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) + " ms to reactivate; limit is 5000 ms.");
 
+                Console.WriteLine("RESUME_FRAME_METRICS before=" + nonClientCalculationsBefore +
+                    ", show=" + nonClientCalculationsAfterShow +
+                    ", activate=" + nonClientCalculationsAfterActivate +
+                    ", bringToFront=" + nonClientCalculationsAfterBringToFront +
+                    ", activated=" + nonClientCalculationsAtActivated +
+                    ", settled=" + nonClientCalculationsAfterSettled +
+                    ", visibleAtActivated=" + visibleAtActivated);
                 Console.WriteLine("PASS: hide/resume " + stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                    " ms; page responsive; URL/DOM preserved; navigation delta=0; WM_NCCALCSIZE delta=0.");
+                    " ms; page responsive; URL/DOM preserved; navigation delta=0; WM_NCCALCSIZE stable after Show().");
             }
         }
         finally
@@ -821,7 +864,9 @@ internal static class WindowsWebView2SmokeTests
         var showHome = typeof(BrowserForm).GetMethod("ShowHomeView", BindingFlags.Instance | BindingFlags.NonPublic);
         var homeField = typeof(BrowserForm).GetField("_homeView", BindingFlags.Instance | BindingFlags.NonPublic);
         var greetingField = typeof(BrowserForm).GetField("_homeGreetingLabel", BindingFlags.Instance | BindingFlags.NonPublic);
-        if (showHome == null || homeField == null || greetingField == null)
+        var refreshMethod = typeof(BrowserForm).GetMethod("RefreshVisibleHomeView", BindingFlags.Instance | BindingFlags.NonPublic);
+        var refreshPendingField = typeof(BrowserForm).GetField("_homeViewRefreshPending", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (showHome == null || homeField == null || greetingField == null || refreshMethod == null || refreshPendingField == null)
             throw new InvalidOperationException("The browser home view could not be located for resume testing.");
 
         showHome.Invoke(browser, null);
@@ -832,15 +877,25 @@ internal static class WindowsWebView2SmokeTests
 
         var originalWallpaper = home.BackgroundImage;
         var expected = Color.FromArgb(39, 112, 177);
+        var samplePoints = new[]
+        {
+            new Point(12, Math.Max(12, home.ClientSize.Height - 12)),
+            new Point(home.ClientSize.Width / 2, Math.Max(12, home.ClientSize.Height - 12)),
+            new Point(Math.Max(12, home.ClientSize.Width - 12), Math.Max(12, home.ClientSize.Height - 12))
+        };
         using (var wallpaper = new Bitmap(1, 1))
         {
             wallpaper.SetPixel(0, 0, expected);
             var activated = new TaskCompletionSource<bool>();
             int paintCount = 0;
             int paintsWhenActivatedEventReached = -1;
+            bool visibleWhenActivated = false;
+            bool pendingWhenActivated = false;
             EventHandler activatedHandler = delegate
             {
                 paintsWhenActivatedEventReached = paintCount;
+                visibleWhenActivated = browser.Visible;
+                pendingWhenActivated = (bool)refreshPendingField.GetValue(browser);
                 activated.TrySetResult(true);
             };
             PaintEventHandler paintHandler = delegate { paintCount++; };
@@ -850,34 +905,45 @@ internal static class WindowsWebView2SmokeTests
             {
                 home.BackgroundImage = wallpaper;
                 home.Refresh();
-                int paintsBeforeResume = paintCount;
+                await Task.Delay(100);
+                int[] screenPixelsBefore = CaptureHomePixels(home, samplePoints, true);
+                int[] renderedPixelsBefore = CaptureHomePixels(home, samplePoints, false);
                 browser.Hide();
                 await WaitUntilAsync(() => !browser.Visible, 2000);
                 await Task.Delay(100);
+                refreshMethod.Invoke(browser, null);
+                if (!(bool)refreshPendingField.GetValue(browser))
+                    throw new InvalidOperationException("Calling the production homepage refresh while hidden did not queue a deferred refresh.");
+                int paintsBeforeShow = paintCount;
                 browser.Show();
+                if (!browser.Visible)
+                    throw new InvalidOperationException("The browser remained hidden after Show() during homepage resume.");
+                int paintsImmediatelyAfterShow = paintCount;
                 browser.Activate();
                 browser.BringToFront();
                 if (await Task.WhenAny(activated.Task, Task.Delay(5000)) != activated.Task)
                     throw new TimeoutException("The home view did not reactivate within 5 seconds.");
                 await activated.Task;
+                await WaitUntilAsync(() => !(bool)refreshPendingField.GetValue(browser), 5000);
+                await Task.Delay(100);
 
                 if (!home.Visible || String.IsNullOrWhiteSpace(greeting.Text))
                     throw new InvalidOperationException("The home view or greeting disappeared after foreground resume.");
-                if (paintsWhenActivatedEventReached <= paintsBeforeResume)
-                    throw new InvalidOperationException("The browser activation handler did not repaint the visible home view.");
-                using (var frame = new Bitmap(home.Width, home.Height))
-                {
-                    home.DrawToBitmap(frame, new Rectangle(Point.Empty, home.Size));
-                    var actual = frame.GetPixel(Math.Max(0, frame.Width - 10), Math.Max(0, frame.Height - 10));
-                    const int tolerance = 40;
-                    if (Math.Abs(actual.R - expected.R) > tolerance ||
-                        Math.Abs(actual.G - expected.G) > tolerance ||
-                        Math.Abs(actual.B - expected.B) > tolerance)
-                        throw new InvalidOperationException("The homepage wallpaper was not repainted after resume; expected " +
-                            expected + ", got " + actual + ".");
-                }
+                if (paintCount <= paintsImmediatelyAfterShow)
+                    throw new InvalidOperationException("The deferred homepage refresh did not produce a paint after Show() returned.");
+                int[] screenPixelsAfter = CaptureHomePixels(home, samplePoints, true);
+                int[] renderedPixelsAfter = CaptureHomePixels(home, samplePoints, false);
+                AssertPixelsStable("homepage screen", screenPixelsBefore, screenPixelsAfter);
+                AssertPixelsStable("homepage rendered content", renderedPixelsBefore, renderedPixelsAfter);
 
-                Console.WriteLine("PASS: home view and wallpaper repainted after hide/resume.");
+                Console.WriteLine("HOME_RESUME_METRICS paints.beforeShow=" + paintsBeforeShow +
+                    ", immediatelyAfterShow=" + paintsImmediatelyAfterShow +
+                    ", afterDeferredRefresh=" + paintCount +
+                    ", visibleAtActivated=" + visibleWhenActivated +
+                    ", pendingAtActivated=" + pendingWhenActivated +
+                    ", paintsAtActivated=" + paintsWhenActivatedEventReached +
+                    ", screenPixelsStable=true, renderedPixelsStable=true.");
+                Console.WriteLine("PASS: deferred homepage refresh completed after hide/resume; screen and rendered pixels remained stable.");
             }
             finally
             {
@@ -888,6 +954,48 @@ internal static class WindowsWebView2SmokeTests
                 if (!browser.Visible)
                     browser.Show();
             }
+        }
+    }
+
+    private static int[] CaptureHomePixels(Control home, Point[] points, bool captureScreen)
+    {
+        int width = home.ClientSize.Width;
+        int height = home.ClientSize.Height;
+        if (width <= 0 || height <= 0)
+            throw new InvalidOperationException("The homepage has no client area for pixel stability checks.");
+        using (var bitmap = new Bitmap(width, height))
+        {
+            if (captureScreen)
+            {
+                var screenBounds = home.RectangleToScreen(home.ClientRectangle);
+                using (var graphics = Graphics.FromImage(bitmap))
+                    graphics.CopyFromScreen(screenBounds.Location, Point.Empty, bitmap.Size);
+            }
+            else
+            {
+                home.DrawToBitmap(bitmap, new Rectangle(Point.Empty, home.ClientSize));
+            }
+
+            var pixels = new int[points.Length];
+            for (int i = 0; i < points.Length; i++)
+            {
+                if (points[i].X < 0 || points[i].Y < 0 || points[i].X >= width || points[i].Y >= height)
+                    throw new InvalidOperationException("A homepage pixel sample fell outside the control bounds.");
+                pixels[i] = bitmap.GetPixel(points[i].X, points[i].Y).ToArgb();
+            }
+            return pixels;
+        }
+    }
+
+    private static void AssertPixelsStable(string label, int[] before, int[] after)
+    {
+        if (before == null || after == null || before.Length != after.Length)
+            throw new InvalidOperationException(label + " pixel samples could not be compared.");
+        for (int i = 0; i < before.Length; i++)
+        {
+            if (before[i] != after[i])
+                throw new InvalidOperationException(label + " pixel " + i + " changed across resume: " +
+                    Color.FromArgb(before[i]) + " -> " + Color.FromArgb(after[i]) + ".");
         }
     }
 

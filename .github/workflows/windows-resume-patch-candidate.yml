@@ -1,0 +1,89 @@
+name: Windows v1.5.2 resume patch candidate
+
+on:
+  push:
+    branches:
+      - 'patch/v1.5.2-resume'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-resume-runtime:
+    name: Isolated background-resume runtime test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build app and WebView2 smoke tests
+        shell: pwsh
+        run: dotnet build tests/WindowsWebView2SmokeTests.csproj -c Release
+
+      - name: Run isolated background-resume and homepage repaint tests
+        shell: pwsh
+        run: |
+          $env:CHENMU_WEBVIEW_SMOKE_RESUME_ONLY = '1'
+          dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release --no-build
+
+  homepage-visual:
+    name: Independent homepage wallpaper visual test
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run homepage wallpaper visual assertions
+        shell: pwsh
+        run: dotnet run --project tests/HomeVisualSmokeTests.csproj -c Release
+
+  full-webview2-smoke:
+    name: Existing full Windows WebView2 smoke suite
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run full Windows WebView2 smoke suite
+        shell: pwsh
+        run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
+
+  logic-and-app-build:
+    name: Logic tests and release application build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run cross-platform logic tests
+        shell: pwsh
+        run: dotnet run --project tests/BrowserLogicTests.csproj -c Release
+
+      - name: Build release application
+        shell: pwsh
+        run: dotnet build CHENMU-Browser.csproj -c Release
