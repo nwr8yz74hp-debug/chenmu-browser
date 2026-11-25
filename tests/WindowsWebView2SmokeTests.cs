@@ -58,6 +58,7 @@ internal static class WindowsWebView2SmokeTests
     [STAThread]
     private static int Main()
     {
+        bool resumeOnly = String.Equals(Environment.GetEnvironmentVariable("CHENMU_WEBVIEW_SMOKE_RESUME_ONLY"), "1", StringComparison.Ordinal);
         string root = Path.Combine(Path.GetTempPath(), "chenmu-webview2-smoke-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         Application.EnableVisualStyles();
@@ -66,35 +67,50 @@ internal static class WindowsWebView2SmokeTests
         {
             string browserData = Path.Combine(root, "browser-data");
             Directory.CreateDirectory(browserData);
-            File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.5.0\r\n", new UTF8Encoding(false));
+            if (!resumeOnly)
+                File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v1.5.0\r\n", new UTF8Encoding(false));
             using (var server = new LocalTestServer())
             using (var browser = new BrowserForm(browserData, true, 1))
             {
-                using (StartUpdateNoticeDialogValidation(browser))
+                var updateNoticeValidation = resumeOnly ? null : StartUpdateNoticeDialogValidation(browser);
+                using (updateNoticeValidation)
                 {
                     browser.Shown += async delegate
                     {
                         try
                         {
-                            Console.WriteLine("START: wallpaper menu lifecycle.");
-                            TestWallpaperMenuLifecycle(browser);
-                            Console.WriteLine("START: navigation history.");
-                            await TestV15NavigationHistoryAsync(browser);
-                            Console.WriteLine("START: find, zoom and recently closed tabs.");
-                            await TestV15FindZoomAndRecentlyClosedAsync(browser);
-                            Console.WriteLine("START: local extensions.");
-                            await TestV15ExtensionsAsync(browser, root);
-                            Console.WriteLine("START: PDF/PNG save dialogs.");
-                            await TestV15PageExportsAndCancelAsync(browser, root);
-                            Console.WriteLine("START: default-deny site permissions.");
-                            await TestDefaultDenyPermissionsAsync(browser, server);
-                            Console.WriteLine("START: Reader file boundary.");
-                            await TestReaderSubresourceBoundaryAsync(root);
-                            Console.WriteLine("START: background resume regression.");
-                            await TestBackgroundResumeAsync(browser);
-                            await TestHomeViewResumeAsync(browser);
-                            await CaptureRunningBrowserScreenshotAsync(browser);
-                            Console.WriteLine("PASS: v1.5 navigation, find, zoom, extensions, recent tabs, exports, permission, Reader boundary, page resume and home repaint regressions.");
+                            if (resumeOnly)
+                            {
+                                Console.WriteLine("START: isolated background resume regression.");
+                                await EnsureBrowserWebViewAsync(browser);
+                                var resumeCore = GetCoreForTab(GetActiveTab(browser));
+                                await NavigateCoreAndWaitAsync(browser, resumeCore, server.Url + "resume-only");
+                                await TestBackgroundResumeAsync(browser);
+                                await TestHomeViewResumeAsync(browser);
+                                Console.WriteLine("PASS: isolated background resume and homepage repaint regressions.");
+                            }
+                            else
+                            {
+                                Console.WriteLine("START: wallpaper menu lifecycle.");
+                                TestWallpaperMenuLifecycle(browser);
+                                Console.WriteLine("START: navigation history.");
+                                await TestV15NavigationHistoryAsync(browser);
+                                Console.WriteLine("START: find, zoom and recently closed tabs.");
+                                await TestV15FindZoomAndRecentlyClosedAsync(browser);
+                                Console.WriteLine("START: local extensions.");
+                                await TestV15ExtensionsAsync(browser, root);
+                                Console.WriteLine("START: PDF/PNG save dialogs.");
+                                await TestV15PageExportsAndCancelAsync(browser, root);
+                                Console.WriteLine("START: default-deny site permissions.");
+                                await TestDefaultDenyPermissionsAsync(browser, server);
+                                Console.WriteLine("START: Reader file boundary.");
+                                await TestReaderSubresourceBoundaryAsync(root);
+                                Console.WriteLine("START: background resume regression.");
+                                await TestBackgroundResumeAsync(browser);
+                                await TestHomeViewResumeAsync(browser);
+                                await CaptureRunningBrowserScreenshotAsync(browser);
+                                Console.WriteLine("PASS: v1.5 navigation, find, zoom, extensions, recent tabs, exports, permission, Reader boundary, page resume and home repaint regressions.");
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -112,9 +128,9 @@ internal static class WindowsWebView2SmokeTests
             }
             if (_failure != null)
                 throw _failure;
-            if (!_updateNoticeValidated)
+            if (!resumeOnly && !_updateNoticeValidated)
                 throw new InvalidOperationException("The v1.5.0 update-complete dialog was not visually validated.");
-            if (!_wallpaperMenuDisposedOnBrowserClose)
+            if (!resumeOnly && !_wallpaperMenuDisposedOnBrowserClose)
                 throw new InvalidOperationException("The wallpaper ContextMenuStrip was not disposed with BrowserForm.");
             return 0;
         }
