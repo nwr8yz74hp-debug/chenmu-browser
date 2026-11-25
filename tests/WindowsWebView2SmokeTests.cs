@@ -864,9 +864,8 @@ internal static class WindowsWebView2SmokeTests
         var showHome = typeof(BrowserForm).GetMethod("ShowHomeView", BindingFlags.Instance | BindingFlags.NonPublic);
         var homeField = typeof(BrowserForm).GetField("_homeView", BindingFlags.Instance | BindingFlags.NonPublic);
         var greetingField = typeof(BrowserForm).GetField("_homeGreetingLabel", BindingFlags.Instance | BindingFlags.NonPublic);
-        var refreshMethod = typeof(BrowserForm).GetMethod("RefreshVisibleHomeView", BindingFlags.Instance | BindingFlags.NonPublic);
         var refreshPendingField = typeof(BrowserForm).GetField("_homeViewRefreshPending", BindingFlags.Instance | BindingFlags.NonPublic);
-        if (showHome == null || homeField == null || greetingField == null || refreshMethod == null || refreshPendingField == null)
+        if (showHome == null || homeField == null || greetingField == null || refreshPendingField == null)
             throw new InvalidOperationException("The browser home view could not be located for resume testing.");
 
         showHome.Invoke(browser, null);
@@ -911,9 +910,6 @@ internal static class WindowsWebView2SmokeTests
                 browser.Hide();
                 await WaitUntilAsync(() => !browser.Visible, 2000);
                 await Task.Delay(100);
-                refreshMethod.Invoke(browser, null);
-                if (!(bool)refreshPendingField.GetValue(browser))
-                    throw new InvalidOperationException("Calling the production homepage refresh while hidden did not queue a deferred refresh.");
                 int paintsBeforeShow = paintCount;
                 browser.Show();
                 if (!browser.Visible)
@@ -929,7 +925,11 @@ internal static class WindowsWebView2SmokeTests
 
                 if (!home.Visible || String.IsNullOrWhiteSpace(greeting.Text))
                     throw new InvalidOperationException("The home view or greeting disappeared after foreground resume.");
-                if (paintCount <= paintsImmediatelyAfterShow)
+                if (!visibleWhenActivated && !pendingWhenActivated)
+                    throw new InvalidOperationException("Activated fired before the form became visible, but no deferred homepage refresh was queued.");
+                if (visibleWhenActivated && paintsWhenActivatedEventReached <= paintsBeforeShow)
+                    throw new InvalidOperationException("The homepage did not repaint when Activated ran after the form became visible.");
+                if (!visibleWhenActivated && paintCount <= paintsImmediatelyAfterShow)
                     throw new InvalidOperationException("The deferred homepage refresh did not produce a paint after Show() returned.");
                 int[] screenPixelsAfter = CaptureHomePixels(home, samplePoints, true);
                 int[] renderedPixelsAfter = CaptureHomePixels(home, samplePoints, false);
