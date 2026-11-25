@@ -38,6 +38,13 @@ internal static class WindowsWebView2SmokeTests
     private static extern bool IsWindow(IntPtr handle);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetFocus();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsChild(IntPtr parent, IntPtr child);
+
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr handle);
 
@@ -384,8 +391,32 @@ internal static class WindowsWebView2SmokeTests
             var findTextField = typeof(BrowserForm).GetField("_findTextBox", BindingFlags.Instance | BindingFlags.NonPublic);
             if (findTextField == null)
                 throw new InvalidOperationException("The v1.5 find bar was not found.");
-            await FocusPageInputAndSendKeysAsync(browser, core, "^f");
-            await WaitUntilAsync(() => findTextField.GetValue(browser) is TextBox, 5000);
+            var findView = GetWebViewForTab(GetActiveTab(browser)) as WebView2;
+            bool ctrlFReachedWebView = false;
+            KeyEventHandler ctrlFObserver = delegate(object sender, KeyEventArgs args)
+            {
+                if (args.Control && args.KeyCode == Keys.F)
+                    ctrlFReachedWebView = true;
+            };
+            if (findView == null)
+                throw new InvalidOperationException("The active find-page WebView was not available.");
+            findView.KeyDown += ctrlFObserver;
+            try
+            {
+                await FocusPageInputAndSendKeysAsync(browser, core, "^f");
+                await WaitUntilAsync(() => findTextField.GetValue(browser) is TextBox, 5000);
+            }
+            catch (TimeoutException ex)
+            {
+                var nativeFocus = GetFocus();
+                throw new TimeoutException("Ctrl+F did not create the custom find-bar textbox. KeyDownReachedWebView=" +
+                    ctrlFReachedWebView + ", nativeFocusIsWebViewChild=" + IsChild(findView.Handle, nativeFocus) +
+                    ", webViewContainsFocus=" + findView.ContainsFocus + ", coreSource=" + core.Source + ".", ex);
+            }
+            finally
+            {
+                findView.KeyDown -= ctrlFObserver;
+            }
             var findText = findTextField.GetValue(browser) as TextBox;
             if (findText == null || findText.FindForm() == null || !findText.FindForm().Visible)
                 throw new InvalidOperationException("Ctrl+F did not create its find bar input.");
