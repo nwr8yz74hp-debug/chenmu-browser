@@ -307,6 +307,29 @@ internal static class BrowserLogicTests
         finally { TryDelete(root); }
     }
 
+    private static void TestHomeGreetings()
+    {
+        Assert(HomeGreetingProvider.DailyGreetingCount >= 60, "首页内置至少几十条日常问候语");
+        Assert(HomeGreetingProvider.GetGreeting(new DateTime(2026, 11, 25, 8, 0, 0)).StartsWith("早上好"),
+            "早间时段使用早间问候");
+        Assert(HomeGreetingProvider.GetGreeting(new DateTime(2026, 11, 25, 13, 0, 0)).StartsWith("下午好"),
+            "午后时段使用午后问候");
+        Assert(HomeGreetingProvider.GetGreeting(new DateTime(2026, 11, 25, 20, 0, 0)).StartsWith("晚上好"),
+            "晚间时段使用晚间问候");
+        Assert(HomeGreetingProvider.GetGreeting(new DateTime(2026, 11, 25, 23, 30, 0)).StartsWith("夜深了"),
+            "深夜时段使用夜间问候");
+        Assert(HomeGreetingProvider.GetGreeting(new DateTime(2026, 10, 10, 10, 0, 0)).Contains("双十节"),
+            "台湾双十节显示专属问候");
+        Assert(HomeGreetingProvider.GetGreeting(new DateTime(2026, 12, 25, 10, 0, 0)).Contains("圣诞"),
+            "圣诞节显示专属问候");
+        string lunarNewYearGreeting = HomeGreetingProvider.GetGreeting(new DateTime(2026, 2, 17, 10, 0, 0));
+        Assert(lunarNewYearGreeting.Contains("新春") || lunarNewYearGreeting.Contains("新岁"),
+            "农历新年显示专属问候");
+        Assert(HomeGreetingProvider.GetGreeting(new DateTime(2026, 11, 25, 8, 0, 0)) ==
+            HomeGreetingProvider.GetGreeting(new DateTime(2026, 11, 25, 8, 30, 0)),
+            "同一日同一时段的问候稳定，不随时钟刷新频繁跳变");
+    }
+
     private static void TestV15RecentlyClosedTabsAndZoom()
     {
         var closed = new RecentlyClosedTabs();
@@ -437,6 +460,7 @@ internal static class BrowserLogicTests
         TestDownloadHistoryStorage();
         TestSitePermissionStorage();
         TestReaderPositionStorage();
+        TestHomeGreetings();
         TestV15RecentlyClosedTabsAndZoom();
         TestV15ExtensionManifestPolicy();
         TestV15QrCodeGeneration();

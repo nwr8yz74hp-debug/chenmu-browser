@@ -78,7 +78,7 @@ namespace ChenmuBrowser
             _homeGreetingLabel.Text = GetHomeGreeting();
             if (_homeClockLabel != null && !_homeClockLabel.IsDisposed)
                 _homeClockLabel.Text = DateTime.Now.ToString("yyyy年M月d日 dddd  HH:mm", CultureInfo.GetCultureInfo("zh-CN")) +
-                    "  ·  愿你在浏览中有所发现";
+                    "  ·  浏览发现世界";
         }
 
         private void RecordHistory(CoreWebView2 core)

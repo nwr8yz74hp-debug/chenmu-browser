@@ -1623,14 +1623,7 @@ namespace ChenmuBrowser
 
         private static string GetHomeGreeting()
         {
-            var hour = DateTime.Now.Hour;
-            if (hour >= 5 && hour < 12)
-                return "早上好，愿你从容开启新一天";
-            if (hour >= 12 && hour < 18)
-                return "下午好，愿你此刻心情明朗";
-            if (hour >= 18 && hour < 23)
-                return "晚上好，愿你带着收获轻松归来";
-            return "夜深了，愿你安然，也有好梦";
+            return HomeGreetingProvider.GetGreeting(DateTime.Now);
         }
 
         private static string GetBookmarkHost(string url)
