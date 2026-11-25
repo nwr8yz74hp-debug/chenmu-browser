@@ -35,7 +35,7 @@ internal static class WindowsWebView2SmokeTests
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindowVisible(IntPtr handle);
+    private static extern bool IsWindow(IntPtr handle);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -68,8 +68,6 @@ internal static class WindowsWebView2SmokeTests
         {
             string browserData = Path.Combine(root, "browser-data");
             Directory.CreateDirectory(browserData);
-            if (!resumeOnly)
-                File.WriteAllText(Path.Combine(browserData, "update-notice.txt"), "v" + currentProductVersion.ToString(3) + "\r\n", new UTF8Encoding(false));
             using (var server = new LocalTestServer())
             using (var browser = new BrowserForm(browserData, true, 1))
             {
@@ -79,6 +77,8 @@ internal static class WindowsWebView2SmokeTests
                     {
                         try
                         {
+                            if (!resumeOnly)
+                                ShowCurrentUpdateNoticeForSmoke(browser, browserData, currentProductVersion);
                             if (resumeOnly)
                             {
                                 Console.WriteLine("START: initialize WebView2 for isolated resume smoke.");
@@ -155,6 +155,17 @@ internal static class WindowsWebView2SmokeTests
         return new Version(assemblyVersion.Major, assemblyVersion.Minor, Math.Max(0, assemblyVersion.Build));
     }
 
+    private static void ShowCurrentUpdateNoticeForSmoke(BrowserForm browser, string browserData, Version currentVersion)
+    {
+        Console.WriteLine("START: current-version update notice dialog.");
+        File.WriteAllText(Path.Combine(browserData, "update-notice.txt"),
+            "v" + currentVersion.ToString(3) + "\r\n", new UTF8Encoding(false));
+        var showMethod = typeof(BrowserForm).GetMethod("ShowPendingUpdateNotice", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (showMethod == null)
+            throw new InvalidOperationException("The pending update-notice method was not found.");
+        showMethod.Invoke(browser, null);
+    }
+
     private static string BuildExpectedCurrentUpdateNoticeMessage(Version currentVersion)
     {
         string releaseNotesPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RELEASE_NOTES.md");
@@ -178,12 +189,43 @@ internal static class WindowsWebView2SmokeTests
         var deadline = DateTime.UtcNow.AddSeconds(15);
         var expectedMessage = BuildExpectedCurrentUpdateNoticeMessage(currentVersion);
         var timer = new System.Windows.Forms.Timer { Interval = 100 };
+        IntPtr observedDialog = IntPtr.Zero;
+        bool closeRequested = false;
+        DateTime closeRetryAt = DateTime.MinValue;
+        int closeAttempts = 0;
         timer.Tick += delegate
         {
+            if (observedDialog != IntPtr.Zero)
+            {
+                if (!IsWindow(observedDialog))
+                {
+                    timer.Stop();
+                    Console.WriteLine("PASS: update notice dialog was destroyed; smoke event loop resumed.");
+                    return;
+                }
+                if (closeRequested && DateTime.UtcNow >= closeRetryAt)
+                {
+                    if (closeAttempts >= 3)
+                    {
+                        timer.Stop();
+                        _failure = new TimeoutException("The validated update notice dialog remained alive after three asynchronous close attempts.");
+                        Console.Error.WriteLine(_failure.Message);
+                        try { browser.Close(); }
+                        catch { }
+                        return;
+                    }
+                    PostMessage(observedDialog, 0x0010, IntPtr.Zero, IntPtr.Zero);
+                    closeAttempts++;
+                    closeRetryAt = DateTime.UtcNow.AddSeconds(1);
+                    Console.WriteLine("Retrying asynchronous WM_CLOSE for the update notice dialog (attempt " + closeAttempts + ").");
+                }
+                return;
+            }
+
             var dialog = FindWindow("#32770", "CHENMU Browser 更新完成");
             if (dialog != IntPtr.Zero)
             {
-                timer.Stop();
+                observedDialog = dialog;
                 try
                 {
                     var text = new List<string>();
@@ -219,24 +261,15 @@ internal static class WindowsWebView2SmokeTests
                     _failure = ex;
                     Console.Error.WriteLine(ex);
                 }
-                finally
-                {
-                    var okButton = GetDlgItem(dialog, 1);
-                    if (okButton == IntPtr.Zero)
-                        Console.Error.WriteLine("Update notice OK button was not found; dismissing the validated dialog directly.");
-                    else
-                    {
-                        SendMessage(okButton, 0x00F5, IntPtr.Zero, IntPtr.Zero);
-                        if (!IsWindowVisible(dialog))
-                            Console.WriteLine("PASS: synchronously clicked the update notice OK button.");
-                    }
-                    if (IsWindowVisible(dialog))
-                        SendMessage(dialog, 0x0111, new IntPtr(1), IntPtr.Zero);
-                    if (IsWindowVisible(dialog))
-                        SendMessage(dialog, 0x0010, IntPtr.Zero, IntPtr.Zero);
-                    if (IsWindowVisible(dialog))
-                        Console.Error.WriteLine("Update notice dialog remained open after BM_CLICK, IDOK, and WM_CLOSE.");
-                }
+                var okButton = GetDlgItem(dialog, 1);
+                closeRequested = true;
+                closeRetryAt = DateTime.UtcNow.AddSeconds(2);
+                if (okButton != IntPtr.Zero)
+                    PostMessage(okButton, 0x00F5, IntPtr.Zero, IntPtr.Zero);
+                else
+                    Console.Error.WriteLine("Update notice OK button was not found; posting IDOK and WM_CLOSE asynchronously.");
+                PostMessage(dialog, 0x0111, new IntPtr(1), IntPtr.Zero);
+                PostMessage(dialog, 0x0010, IntPtr.Zero, IntPtr.Zero);
                 return;
             }
 
