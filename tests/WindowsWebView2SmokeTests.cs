@@ -265,6 +265,10 @@ internal static class WindowsWebView2SmokeTests
                         message.IndexOf(expectedMessage, StringComparison.Ordinal) < 0)
                         throw new InvalidOperationException("The visible branded update story did not contain the verified v1 history and current changelog. Expected: " + expectedMessage + " Actual: " + message);
 
+                    if (currentVersion.Major == 1 && currentVersion.Minor == 5 && currentVersion.Build == 4 &&
+                        message.IndexOf("测试版 · 验证状态请查看本次更新说明与 GitHub 发布页。", StringComparison.Ordinal) < 0)
+                        throw new InvalidOperationException("The v1.5.4 test-release risk notice is missing from the visible branded dialog.");
+
                     _updateNoticeValidated = true;
                     Console.WriteLine("PASS: visible branded update dialog title, v1 history, v1.5 LTS story and current Chinese changelog.");
                 }
@@ -888,11 +892,13 @@ internal static class WindowsWebView2SmokeTests
         {
             if (!Object.ReferenceEquals(GetCoreForTab(GetActiveTab(browser)), core))
                 throw new InvalidOperationException("The test navigation target is not the active browser tab.");
-            var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (navigate == null)
-                throw new InvalidOperationException("BrowserForm.NavigateAsync was not found.");
-            await (Task)navigate.Invoke(browser, new object[] { expected.AbsoluteUri, false });
-            var finished = await Task.WhenAny(completion.Task, Task.Delay(15000));
+	            var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+	            if (navigate == null)
+	                throw new InvalidOperationException("BrowserForm.NavigateAsync was not found.");
+	            // Reflection does not apply optional parameters; pass NavigateAsync's
+	            // BrowserTab argument explicitly for the active tab.
+	            await (Task)navigate.Invoke(browser, new object[] { expected.AbsoluteUri, false, null });
+	            var finished = await Task.WhenAny(completion.Task, Task.Delay(15000));
             if (finished != completion.Task)
                 throw new TimeoutException("Timed out navigating to " + targetUrl + "; source=" + core.Source);
             await completion.Task;
@@ -1505,11 +1511,12 @@ internal static class WindowsWebView2SmokeTests
         core.SourceChanged += sourceChangedHandler;
         try
         {
-            var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (navigate == null)
-                throw new InvalidOperationException("BrowserForm.NavigateAsync was not found.");
-            await (Task)navigate.Invoke(browser, new object[] { expected.AbsoluteUri, false });
-            var finished = await Task.WhenAny(completion.Task, Task.Delay(20000));
+	            var navigate = typeof(BrowserForm).GetMethod("NavigateAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+	            if (navigate == null)
+	                throw new InvalidOperationException("BrowserForm.NavigateAsync was not found.");
+	            // Keep this invocation aligned with NavigateAsync's full reflected signature.
+	            await (Task)navigate.Invoke(browser, new object[] { expected.AbsoluteUri, false, null });
+	            var finished = await Task.WhenAny(completion.Task, Task.Delay(20000));
             if (finished != completion.Task)
                 throw new TimeoutException("Timed out waiting for the permission test page. Current source: " + core.Source +
                     "; last navigation: " + lastNavigation + "; last completion: " + lastCompletion);

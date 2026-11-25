@@ -41,6 +41,8 @@ if ($LASTEXITCODE -ne 0) { throw 'dotnet restore 失败。' }
 & dotnet build $Project -c Release -r win-x64 -p:PlatformTarget=x64 -o $Output --nologo
 if ($LASTEXITCODE -ne 0) { throw 'dotnet build 失败。' }
 
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'RELEASE_NOTES.md') -Destination (Join-Path $Output 'RELEASE_NOTES.md') -Force
+
 $WebViewLoader = Join-Path $Output 'WebView2Loader.dll'
 if (-not (Test-Path -LiteralPath $WebViewLoader)) {
     throw '发布目录缺少 WebView2Loader.dll；请确认构建使用了 win-x64 RID。'

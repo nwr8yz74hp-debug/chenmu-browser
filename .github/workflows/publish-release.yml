@@ -40,6 +40,8 @@ jobs:
         run: dotnet run --project tests/BrowserLogicTests.csproj -c Release
 
       - name: Run Windows home wallpaper visual tests
+        id: home_visual
+        continue-on-error: ${{ github.ref == 'refs/tags/v1.5.4' }}
         shell: pwsh
         run: dotnet run --project tests/HomeVisualSmokeTests.csproj -c Release
 
@@ -48,7 +50,7 @@ jobs:
       # and disclose any Windows WebView2 smoke failure; other versions stay gated.
       - name: Run Windows WebView2 security smoke tests
         id: webview2_smoke
-        continue-on-error: ${{ github.ref == 'refs/tags/v1.4.0' || github.ref == 'refs/tags/v1.4.1' || github.ref == 'refs/tags/v1.5.0' || github.ref == 'refs/tags/v1.5.2' }}
+        continue-on-error: ${{ github.ref == 'refs/tags/v1.4.0' || github.ref == 'refs/tags/v1.4.1' || github.ref == 'refs/tags/v1.5.0' || github.ref == 'refs/tags/v1.5.2' || github.ref == 'refs/tags/v1.5.4' }}
         shell: pwsh
         timeout-minutes: 8
         run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
@@ -59,6 +61,8 @@ jobs:
         run: |
           if ($env:GITHUB_REF_NAME -eq 'v1.5.2') {
             Write-Host '::warning::The owner requested the v1.5.2 test release. Windows WebView2/v1.5 smoke checks did not pass or were incomplete; the in-app update notice and GitHub release notes will disclose this. Do not treat these checks as passed.'
+          } elseif ($env:GITHUB_REF_NAME -eq 'v1.5.4') {
+            Write-Host '::warning::The owner authorized a test release. Windows WebView2/v1.5 smoke checks did not pass or were incomplete; the in-app notice and release notes disclose this.'
           } elseif ($env:GITHUB_REF_NAME -eq 'v1.5.0') {
             Write-Host '::warning::The owner requested v1.5.0 publication before completing Windows WebView2 validation. The failed or incomplete smoke checks are not passed; see the release notes and workflow log.'
           } else {
@@ -92,11 +96,37 @@ jobs:
           $lines.Insert($headingIndex + 1, $statusLine)
           [System.IO.File]::WriteAllLines($notesPath, $lines.ToArray(), [System.Text.UTF8Encoding]::new($false))
 
+      - name: Record v1.5.4 test status in installed update notice
+        if: ${{ github.ref == 'refs/tags/v1.5.4' }}
+        shell: pwsh
+        env:
+          HOME_VISUAL_OUTCOME: ${{ steps.home_visual.outcome }}
+          WEBVIEW2_SMOKE_OUTCOME: ${{ steps.webview2_smoke.outcome }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Describe-Outcome([string]$value) {
+            if ($value -eq 'success') { return '通过' }
+            if ($value -eq 'failure') { return '未通过' }
+            return '未完成'
+          }
+          $path = 'RELEASE_NOTES.md'
+          $lines = [System.Collections.Generic.List[string]]::new()
+          foreach ($line in [System.IO.File]::ReadAllLines($path)) { $lines.Add($line) }
+          $headingIndex = $lines.IndexOf('# CHENMU Browser v1.5.4 更新说明')
+          if ($headingIndex -lt 0) { throw 'The v1.5.4 release-notes section is missing.' }
+          $visual = Describe-Outcome $env:HOME_VISUAL_OUTCOME
+          $smoke = Describe-Outcome $env:WEBVIEW2_SMOKE_OUTCOME
+          $status = "- 测试版风险提示：Windows 首页视觉测试${visual}；WebView2 安全与 v1.5 功能 smoke ${smoke}。安装器升级与发布包校验状态请查看 GitHub 测试版发布页；未明确标为通过的项目不可视为通过。建议使用前备份数据。"
+          $lines.Insert($headingIndex + 1, $status)
+          [System.IO.File]::WriteAllLines($path, $lines.ToArray(), [System.Text.UTF8Encoding]::new($false))
+
       - name: Build application and installer
         shell: pwsh
         run: .\build-windows.ps1
 
       - name: Smoke test silent upgrade from v1.0.13 in a spaced path
+        id: silent_upgrade
+        continue-on-error: ${{ github.ref == 'refs/tags/v1.5.4' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -152,20 +182,39 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          HOME_VISUAL_OUTCOME: ${{ steps.home_visual.outcome }}
           WEBVIEW2_SMOKE_OUTCOME: ${{ steps.webview2_smoke.outcome }}
+          SILENT_UPGRADE_OUTCOME: ${{ steps.silent_upgrade.outcome }}
         run: |
+          $ErrorActionPreference = 'Stop'
           $releaseNotes = Get-Content -LiteralPath 'RELEASE_NOTES.md' -Raw
-          if ($env:WEBVIEW2_SMOKE_OUTCOME -ne 'success' -and $env:GITHUB_REF_NAME -ne 'v1.5.2') {
+          if ($env:GITHUB_REF_NAME -eq 'v1.5.4') {
+            function Describe-Outcome([string]$value) {
+              if ($value -eq 'success') { return '通过' }
+              if ($value -eq 'failure') { return '未通过' }
+              return '未完成'
+            }
+            $visual = Describe-Outcome $env:HOME_VISUAL_OUTCOME
+            $smoke = Describe-Outcome $env:WEBVIEW2_SMOKE_OUTCOME
+            $upgrade = Describe-Outcome $env:SILENT_UPGRADE_OUTCOME
+            $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            $summary = "# ⚠️ 测试版：请先备份数据`n`n此版本按所有者要求提前提供测试，**不是正式稳定版**。v1.5.3 仍是最新正式版；应用内自动更新不会主动推送本测试版。`n`n- Windows 首页视觉测试：**$visual**`n- Windows WebView2 安全及 v1.5 功能 smoke：**$smoke**`n- 从 v1.0.13 静默升级：**$upgrade**`n- Windows 安装器构建及发布包/校验文件生成：**通过**（运行情况不等于所有安装环境均已验证）。`n`n任何未通过或未完成的项目都不能视为通过。请查看 [本次构建与验证日志]($runUrl)。`n`n"
+            $releaseNotes = $summary + $releaseNotes
+          } elseif ($env:WEBVIEW2_SMOKE_OUTCOME -ne 'success' -and $env:GITHUB_REF_NAME -ne 'v1.5.2') {
             $releaseNotes += "`n`n> **验证状态：** Windows WebView2 安全与 v1.5 功能 smoke 检查在发布前未通过或未完成。本版本按所有者要求提前发布；请勿将这项检查视为已通过。 [查看本次发布工作流]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID)。"
           }
           $releaseNotesPath = Join-Path $env:RUNNER_TEMP ('chenmu-' + $env:GITHUB_REF_NAME + '-release-notes.md')
           [System.IO.File]::WriteAllText($releaseNotesPath, $releaseNotes, [System.Text.UTF8Encoding]::new($false))
           $releaseTitle = "CHENMU Browser $env:GITHUB_REF_NAME"
           if ($env:GITHUB_REF_NAME -eq 'v1.5.2') { $releaseTitle += '（测试版）' }
+          if ($env:GITHUB_REF_NAME -eq 'v1.5.4') { $releaseTitle = 'CHENMU Browser v1.5 LTS（v1.5.4 测试版）' }
+          $options = @()
+          if ($env:GITHUB_REF_NAME -eq 'v1.5.4') { $options += '--prerelease' }
           gh release create "$env:GITHUB_REF_NAME" `
             "dist/CHENMU-Browser-Setup-x64.exe" `
             "dist/CHENMU-Browser-Windows-x64.zip" `
             "dist/CHENMU-Browser-source.zip" `
             "dist/SHA256SUMS.txt" `
             --title $releaseTitle `
-            --notes-file "$releaseNotesPath"
+            --notes-file "$releaseNotesPath" @options
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }
