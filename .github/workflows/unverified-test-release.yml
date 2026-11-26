@@ -1,0 +1,224 @@
+name: Publish Unverified CHENMU Windows Test Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Candidate branch to build
+        required: true
+        default: release/v1.5.5
+        type: string
+      release_tag:
+        description: Test-only tag (must start with test-v1.5.5-)
+        required: true
+        default: test-v1.5.5-20261126.1
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish-unverified-test-build:
+    name: Build and publish explicitly unverified test release
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+
+      - name: Validate test-only source and tag
+        id: candidate
+        shell: pwsh
+        env:
+          TEST_TAG: ${{ inputs.release_tag }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_REF -ne 'release/v1.5.5') { throw 'This workflow is restricted to release/v1.5.5.' }
+          if ($env:TEST_TAG -notmatch '^test-v1\.5\.5-[A-Za-z0-9.-]+$') { throw 'The tag must start with test-v1.5.5-; official tags are not allowed here.' }
+          [xml]$project = Get-Content -LiteralPath 'CHENMU-Browser.csproj' -Raw
+          $version = $project.SelectSingleNode('/Project/PropertyGroup/Version').InnerText.Trim()
+          if ($version -ne '1.5.5') { throw "Expected project version 1.5.5, got $version." }
+          $sha = (git rev-parse HEAD).Trim()
+          "source_sha=$sha" >> $env:GITHUB_OUTPUT
+          Write-Host "Test build source: $env:SOURCE_REF at $sha; test tag: $env:TEST_TAG"
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run cross-platform logic tests
+        id: logic
+        continue-on-error: true
+        shell: pwsh
+        run: dotnet run --project tests/BrowserLogicTests.csproj -c Release
+
+      - name: Run Windows homepage visual tests
+        id: home_visual
+        continue-on-error: true
+        shell: pwsh
+        run: dotnet run --project tests/HomeVisualSmokeTests.csproj -c Release
+
+      - name: Build application and WebView2 smoke tests
+        id: build_smoke
+        shell: pwsh
+        run: dotnet build tests/WindowsWebView2SmokeTests.csproj -c Release
+
+      - name: Run Windows WebView2 security and v1.5 feature smoke tests
+        id: webview2
+        continue-on-error: true
+        timeout-minutes: 8
+        shell: pwsh
+        run: dotnet run --project tests/WindowsWebView2SmokeTests.csproj -c Release
+
+      - name: Record test-only warning in installed release notes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'RELEASE_NOTES.md'
+          $lines = [System.Collections.Generic.List[string]]::new()
+          foreach ($line in [System.IO.File]::ReadAllLines($path)) { $lines.Add($line) }
+          $heading = '# CHENMU Browser v1.5.5 更新说明'
+          $index = $lines.IndexOf($heading)
+          if ($index -lt 0) { throw 'The v1.5.5 release-notes section is missing.' }
+          $warning = '- ⚠️ 测试版风险提示：此安装包仅供测试，v1.5.5 完整发布门槛尚未稳定通过，**不是正式稳定版**。请先备份用户数据；本次分项验证结果见 GitHub 测试版发布说明。'
+          if (-not $lines.Contains($warning)) { $lines.Insert($index + 1, $warning) }
+          [System.IO.File]::WriteAllLines($path, $lines.ToArray(), [System.Text.UTF8Encoding]::new($false))
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: Build application and installer
+        shell: pwsh
+        run: .\build-windows.ps1
+
+      - name: Smoke test silent upgrade from v1.0.13 in a spaced path
+        id: silent_upgrade
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [xml]$project = Get-Content -LiteralPath 'CHENMU-Browser.csproj' -Raw
+          $expectedVersion = $project.SelectSingleNode('/Project/PropertyGroup/Version').InnerText.Trim()
+          $oldInstaller = Join-Path $env:TEMP 'CHENMU-Browser-v1.0.13-Setup.exe'
+          Invoke-WebRequest -Uri 'https://github.com/nwr8yz74hp-debug/chenmu-browser/releases/download/v1.0.13/CHENMU-Browser-Setup-x64.exe' -OutFile $oldInstaller
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\CHENMU Browser CI Space'
+          $registryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CHENMU Browser'
+          $installArgs = '/S /D=' + $installDir
+          function Invoke-SilentNsisInstaller([string]$InstallerPath, [string]$Arguments) {
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = $InstallerPath
+            $startInfo.Arguments = $Arguments
+            $startInfo.UseShellExecute = $false
+            $process = [System.Diagnostics.Process]::Start($startInfo)
+            if ($null -eq $process) { throw "Could not start installer: $InstallerPath" }
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode): $InstallerPath" }
+          }
+          Invoke-SilentNsisInstaller $oldInstaller $installArgs
+          $previous = Get-ItemProperty -LiteralPath $registryPath -Name @('DisplayVersion', 'InstallLocation')
+          if ($previous.DisplayVersion -ne '1.0.13') { throw "Expected v1.0.13, got $($previous.DisplayVersion)." }
+          $newInstaller = Join-Path $env:GITHUB_WORKSPACE 'dist\CHENMU-Browser-Setup-x64.exe'
+          Invoke-SilentNsisInstaller $newInstaller $installArgs
+          $installed = Get-ItemProperty -LiteralPath $registryPath -Name @('DisplayVersion', 'InstallLocation')
+          if ($installed.DisplayVersion -ne $expectedVersion) { throw "Expected v$expectedVersion, got $($installed.DisplayVersion)." }
+          $app = Join-Path $installDir 'CHENMU Browser.exe'
+          if (-not (Test-Path -LiteralPath $app)) { throw 'Installed browser executable is missing.' }
+          $fileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($app).FileVersion
+          if ($fileVersion -ne "$expectedVersion.0") { throw "Unexpected executable version: $fileVersion" }
+          if (-not (Test-Path -LiteralPath (Join-Path $installDir 'RELEASE_NOTES.md'))) { throw 'Installed release notes are missing.' }
+          Write-Host "Silent upgrade smoke test passed: v1.0.13 -> v$expectedVersion."
+
+      - name: Smoke test v1.5.4 to v1.5.5 silent upgrade
+        id: upgrade_154
+        continue-on-error: true
+        shell: pwsh
+        run: .\tests\Verify-UpgradeFromV154.ps1
+
+      - name: Set up Python for packaging
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Package and verify release assets
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python package-release.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset packaging failed.' }
+          $names = @('CHENMU-Browser-Setup-x64.exe', 'CHENMU-Browser-Windows-x64.zip', 'CHENMU-Browser-source.zip')
+          foreach ($name in $names) {
+            $path = Join-Path 'dist' $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) { throw "Missing or empty release asset: $name" }
+          }
+          $hashes = @{}
+          foreach ($line in Get-Content -LiteralPath 'dist\SHA256SUMS.txt') {
+            if ($line -notmatch '^([0-9a-fA-F]{64})  (.+)$') { throw "Malformed checksum line: $line" }
+            $hashes[$Matches[2]] = $Matches[1].ToLowerInvariant()
+          }
+          if ($hashes.Count -ne 3) { throw 'The checksum manifest must contain exactly three assets.' }
+          foreach ($name in $names) {
+            if (-not $hashes.ContainsKey($name)) { throw "Checksum missing for $name." }
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path 'dist' $name)).Hash.ToLowerInvariant()
+            if ($actual -ne $hashes[$name]) { throw "Checksum mismatch for $name." }
+          }
+          Write-Host 'Release packages and SHA-256 manifest verified.'
+
+      - name: Publish clearly marked GitHub pre-release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+          LOGIC_OUTCOME: ${{ steps.logic.outcome }}
+          HOME_VISUAL_OUTCOME: ${{ steps.home_visual.outcome }}
+          BUILD_SMOKE_OUTCOME: ${{ steps.build_smoke.outcome }}
+          WEBVIEW2_OUTCOME: ${{ steps.webview2.outcome }}
+          SILENT_UPGRADE_OUTCOME: ${{ steps.silent_upgrade.outcome }}
+          UPGRADE_154_OUTCOME: ${{ steps.upgrade_154.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Describe-Outcome([string]$value) {
+            if ($value -eq 'success') { return '通过' }
+            if ($value -eq 'failure') { return '未通过' }
+            return '未完成'
+          }
+          $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $notes = @"
+          # ⚠️ 测试版 — 未通过完整稳定发布门槛
+
+          **此为测试预发布，不是正式稳定版。请先备份浏览器数据。** 本测试版按所有者要求提前提供；完整发布门槛尚未稳定通过。GitHub 上的测试版不得视为 v1.5.5 LTS 正式发布，本次不更新原 Worker 官网。
+
+          ## 本次构建的验证结果
+
+          - 跨平台逻辑测试：**$(Describe-Outcome $env:LOGIC_OUTCOME)**
+          - Windows 主页视觉测试：**$(Describe-Outcome $env:HOME_VISUAL_OUTCOME)**
+          - Windows WebView2 smoke 测试工程构建：**$(Describe-Outcome $env:BUILD_SMOKE_OUTCOME)**
+          - Windows WebView2 安全与 v1.5 功能 smoke：**$(Describe-Outcome $env:WEBVIEW2_OUTCOME)**
+          - 从 v1.0.13 静默升级：**$(Describe-Outcome $env:SILENT_UPGRADE_OUTCOME)**
+          - 从 v1.5.4 静默升级：**$(Describe-Outcome $env:UPGRADE_154_OUTCOME)**
+          - Windows 安装器、发布包与 SHA-256 清单：**$(Describe-Outcome $env:PACKAGE_OUTCOME)**
+
+          任何“未通过”或“未完成”项目都不能视为通过。即便上述项目本次全部通过，完整门槛仍需在同一候选上重复完整通过后，才会考虑正式发布。此前候选的保存对话框自动化曾未能完成保存；本构建包含新的 UI Automation 定位与保存按钮调用，以上 smoke 实测结果以本次运行记录为准。
+
+          [查看本次构建与验证日志]($runUrl)
+          "@
+          $notesPath = Join-Path $env:RUNNER_TEMP 'chenmu-v1.5.5-unverified-test-notes.md'
+          [System.IO.File]::WriteAllText($notesPath, $notes, [System.Text.UTF8Encoding]::new($false))
+          gh release create "$env:TEST_TAG" `
+            'dist/CHENMU-Browser-Setup-x64.exe' `
+            'dist/CHENMU-Browser-Windows-x64.zip' `
+            'dist/CHENMU-Browser-source.zip' `
+            'dist/SHA256SUMS.txt' `
+            --target "$env:SOURCE_SHA" `
+            --title '⚠️ CHENMU Browser v1.5 LTS（v1.5.5 测试版｜未完成验证）' `
+            --notes-file "$notesPath" `
+            --prerelease
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub test pre-release publication failed.' }
