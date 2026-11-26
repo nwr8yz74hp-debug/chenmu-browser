@@ -53,6 +53,13 @@ internal static class WindowsWebView2SmokeTests
     private static extern bool EnumChildWindows(IntPtr parent, EnumChildWindowCallback callback, IntPtr parameter);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowText(IntPtr handle, string text);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int GetClassName(IntPtr handle, StringBuilder className, int maximumCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern int GetWindowText(IntPtr handle, StringBuilder text, int maximumCount);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -814,36 +821,61 @@ internal static class WindowsWebView2SmokeTests
             throw new InvalidOperationException("The save operation " + methodName + " was not found.");
 
         bool dialogSeen = false;
+        Exception automationFailure = null;
         var deadline = DateTime.UtcNow.AddSeconds(8);
         using (var timer = new System.Windows.Forms.Timer { Interval = 100 })
         {
             timer.Tick += delegate
             {
-                var handle = FindWindow("#32770", title);
+                var handle = FindWindow(null, title);
                 if (handle != IntPtr.Zero)
                 {
                     dialogSeen = true;
                     timer.Stop();
-                    SetForegroundWindow(handle);
-                    SendKeys.SendWait("%n");
-                    SendKeys.SendWait("^a");
-                    SendKeys.SendWait(EscapeSendKeysLiteral(outputPath));
-                    SendKeys.SendWait("{ENTER}");
+                    var fileNameEdit = FindSaveDialogFileNameEdit(handle);
+                    if (fileNameEdit == IntPtr.Zero || !SetWindowText(fileNameEdit, outputPath))
+                    {
+                        automationFailure = new InvalidOperationException("The save dialog file-name field was not available for '" + title + "'.");
+                        PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                        return;
+                    }
+                    var enteredPath = new StringBuilder(4096);
+                    GetWindowText(fileNameEdit, enteredPath, enteredPath.Capacity);
+                    if (!String.Equals(enteredPath.ToString(), outputPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        automationFailure = new InvalidOperationException("The save dialog did not retain the requested path for '" + title + "'.");
+                        PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                        return;
+                    }
+                    Console.WriteLine("EXPORT: save dialog filename set; posting asynchronous OK for " + title + ".");
+                    if (!PostMessage(handle, 0x0111, new IntPtr(1), IntPtr.Zero))
+                    {
+                        automationFailure = new InvalidOperationException("Could not post the save command for '" + title + "'.");
+                        PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                    }
                 }
                 else if (DateTime.UtcNow >= deadline)
                 {
                     timer.Stop();
-                    SendKeys.SendWait("{ESC}");
+                    automationFailure = new TimeoutException("Could not locate the standard save dialog titled '" + title + "'.");
                 }
             };
             timer.Start();
             var task = method.Invoke(browser, null) as Task;
             if (task == null)
                 throw new InvalidOperationException(methodName + " did not return a Task.");
+            var completed = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(60)));
+            if (completed != task)
+            {
+                automationFailure = new TimeoutException("The save operation did not complete within 60 seconds after dialog automation for '" + title + "'.");
+                throw automationFailure;
+            }
             await task;
             timer.Stop();
         }
 
+        if (automationFailure != null)
+            throw automationFailure;
         if (!dialogSeen)
             throw new TimeoutException("Could not locate the standard save dialog titled '" + title + "'.");
         var status = (Label)statusField.GetValue(browser);
@@ -851,25 +883,26 @@ internal static class WindowsWebView2SmokeTests
             throw new InvalidOperationException("Confirming '" + title + "' did not save the requested file and update browser status.");
     }
 
-    private static string EscapeSendKeysLiteral(string value)
+    private static IntPtr FindSaveDialogFileNameEdit(IntPtr dialog)
     {
-        var result = new StringBuilder(value.Length);
-        foreach (char character in value)
+        var edit = GetDlgItem(dialog, 0x0480);
+        if (edit != IntPtr.Zero)
+            return edit;
+
+        var found = IntPtr.Zero;
+        EnumChildWindowCallback callback = delegate(IntPtr child, IntPtr ignored)
         {
-            switch (character)
+            var className = new StringBuilder(128);
+            if (GetClassName(child, className, className.Capacity) > 0 &&
+                String.Equals(className.ToString(), "Edit", StringComparison.OrdinalIgnoreCase))
             {
-                case '+': result.Append("{+}"); break;
-                case '^': result.Append("{^}"); break;
-                case '%': result.Append("{%}"); break;
-                case '~': result.Append("{~}"); break;
-                case '(': result.Append("{(}"); break;
-                case ')': result.Append("{)}"); break;
-                case '{': result.Append("{{}"); break;
-                case '}': result.Append("{}}"); break;
-                default: result.Append(character); break;
+                found = child;
+                return false;
             }
-        }
-        return result.ToString();
+            return true;
+        };
+        EnumChildWindows(dialog, callback, IntPtr.Zero);
+        return found;
     }
 
     private static async Task CancelSaveDialogAndVerifyNoSideEffectAsync(BrowserForm browser, string title, string methodName)
@@ -886,17 +919,16 @@ internal static class WindowsWebView2SmokeTests
         {
             timer.Tick += delegate
             {
-                var handle = FindWindow("#32770", title);
+                var handle = FindWindow(null, title);
                 if (handle != IntPtr.Zero)
                 {
                     dialogSeen = true;
                     timer.Stop();
-                    SendMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                    PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
                 }
                 else if (DateTime.UtcNow >= deadline)
                 {
                     timer.Stop();
-                    SendKeys.SendWait("{ESC}");
                 }
             };
             timer.Start();
