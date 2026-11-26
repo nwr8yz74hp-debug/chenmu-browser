@@ -28,6 +28,34 @@ internal static class WindowsWebView2SmokeTests
 
     private delegate bool EnumChildWindowCallback(IntPtr handle, IntPtr parameter);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeKeyboardInput
+    {
+        public ushort VirtualKey;
+        public ushort ScanCode;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 32)]
+    private struct NativeInputUnion
+    {
+        [FieldOffset(0)]
+        public NativeKeyboardInput Keyboard;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeInput
+    {
+        public uint Type;
+        public NativeInputUnion Data;
+    }
+
+    private const uint InputKeyboard = 1;
+    private const uint KeyEventKeyUp = 0x0002;
+    private const uint KeyEventUnicode = 0x0004;
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr FindWindow(string className, string windowName);
 
@@ -69,6 +97,9 @@ internal static class WindowsWebView2SmokeTests
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool PostMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint inputCount, [In] NativeInput[] inputs, int inputSize);
 
     [STAThread]
     private static int Main()
@@ -824,6 +855,7 @@ internal static class WindowsWebView2SmokeTests
         bool dialogSeen = false;
         Exception automationFailure = null;
         string fileNameDiagnostic = "<not set>";
+        AutomationElement fileNameField = null;
         var deadline = DateTime.UtcNow.AddSeconds(8);
         using (var timer = new System.Windows.Forms.Timer { Interval = 100 })
         {
@@ -833,13 +865,42 @@ internal static class WindowsWebView2SmokeTests
                 if (handle != IntPtr.Zero)
                 {
                     dialogSeen = true;
-                    timer.Stop();
-                    if (!TrySetSaveDialogFileName(handle, outputPath, out fileNameDiagnostic))
+                    if (fileNameField == null)
                     {
-                        automationFailure = new InvalidOperationException("The save dialog file-name field was not available for '" + title + "': " + fileNameDiagnostic);
-                        PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                        string fieldDiagnostic;
+                        if (!TryFindSaveDialogFileNameField(handle, outputPath, out fileNameField, out fieldDiagnostic))
+                        {
+                            timer.Stop();
+                            automationFailure = new InvalidOperationException("The save dialog file-name field was not available for '" + title + "': " + fieldDiagnostic);
+                            PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                            return;
+                        }
+                        string typingDiagnostic;
+                        if (!TryTypeSaveDialogFileName(handle, fileNameField, outputPath, out typingDiagnostic))
+                        {
+                            timer.Stop();
+                            automationFailure = new InvalidOperationException("Could not type the requested path into '" + title + "': " + typingDiagnostic);
+                            PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                            return;
+                        }
+                        fileNameDiagnostic = fieldDiagnostic + "; " + typingDiagnostic;
+                        Console.WriteLine("EXPORT: " + fileNameDiagnostic + "; waiting for shell dialog to accept the path.");
                         return;
                     }
+
+                    string acceptedPath = ReadSaveDialogFileNameValue(fileNameField);
+                    if (!String.Equals(acceptedPath, outputPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (DateTime.UtcNow >= deadline)
+                        {
+                            timer.Stop();
+                            automationFailure = new TimeoutException("The save dialog did not accept the typed path. expected='" + outputPath + "'; actual='" + acceptedPath + "'.");
+                            PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                        }
+                        return;
+                    }
+                    timer.Stop();
+                    fileNameDiagnostic += "; shell dialog accepted the typed path";
                     string saveButtonDiagnostic;
                     if (!TryInvokeSaveDialogButton(handle, out saveButtonDiagnostic))
                     {
@@ -879,15 +940,14 @@ internal static class WindowsWebView2SmokeTests
                 "; outputExists=" + File.Exists(outputPath) + "; statusText='" + status.Text + "'; filenameAutomation=" + fileNameDiagnostic + ".");
     }
 
-    private static bool TrySetSaveDialogFileName(IntPtr dialog, string outputPath, out string diagnostic)
+    private static bool TryFindSaveDialogFileNameField(IntPtr dialog, string outputPath, out AutomationElement field, out string diagnostic)
     {
-        string uiaState = "UI Automation file-name control was not found";
+        field = null;
         try
         {
             var root = AutomationElement.FromHandle(dialog);
             var editCondition = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit);
             var fields = root.FindAll(TreeScope.Descendants, editCondition);
-            AutomationElement field = null;
             int bestScore = Int32.MinValue;
             string fieldDescription = "<none>";
             for (int i = 0; i < fields.Count; i++)
@@ -921,43 +981,102 @@ internal static class WindowsWebView2SmokeTests
             if (field == null)
             {
                 var comboCondition = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox);
-                field = root.FindFirst(TreeScope.Descendants, comboCondition);
-                if (field != null)
-                    fieldDescription = field.Current.ControlType.ProgrammaticName + ":" + field.Current.Name + ":" + field.Current.AutomationId;
+                var combos = root.FindAll(TreeScope.Descendants, comboCondition);
+                for (int i = 0; i < combos.Count; i++)
+                {
+                    var candidate = combos[i];
+                    var candidateValue = candidate.GetCurrentPattern(ValuePattern.Pattern) as ValuePattern;
+                    if (candidate.Current.IsEnabled && candidateValue != null)
+                    {
+                        field = candidate;
+                        fieldDescription = candidate.Current.ControlType.ProgrammaticName + ":" + candidate.Current.Name + ":" + candidate.Current.AutomationId + ":value=" + candidateValue.Current.Value;
+                        break;
+                    }
+                }
             }
             if (field == null)
                 throw new InvalidOperationException("UI Automation found no Edit or ComboBox descendant.");
-            var value = field.GetCurrentPattern(ValuePattern.Pattern) as ValuePattern;
-            if (value == null)
-                throw new InvalidOperationException("The UI Automation file-name control has no ValuePattern.");
-            value.SetValue(outputPath);
-            string enteredPath = value.Current.Value ?? String.Empty;
-            if (!String.Equals(enteredPath, outputPath, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("UI Automation retained '" + enteredPath + "' instead of the requested path.");
-            diagnostic = "UI Automation set file-name field " + fieldDescription;
+            diagnostic = "UI Automation selected file-name field " + fieldDescription;
             return true;
         }
         catch (Exception ex)
         {
-            uiaState = "UI Automation failed: " + ex.GetType().Name + ": " + ex.Message;
-        }
-
-        var nativeEdit = FindSaveDialogFileNameEdit(dialog);
-        if (nativeEdit != IntPtr.Zero && SetWindowText(nativeEdit, outputPath))
-        {
-            var nativeText = new StringBuilder(4096);
-            GetWindowText(nativeEdit, nativeText, nativeText.Capacity);
-            if (String.Equals(nativeText.ToString(), outputPath, StringComparison.OrdinalIgnoreCase))
+            string uiaState = "UI Automation failed: " + ex.GetType().Name + ": " + ex.Message;
+            var nativeEdit = FindSaveDialogFileNameEdit(dialog);
+            if (nativeEdit != IntPtr.Zero)
             {
-                diagnostic = "Win32 edit control fallback after " + uiaState;
-                return true;
+                try
+                {
+                    field = AutomationElement.FromHandle(nativeEdit);
+                    diagnostic = "native edit fallback " + nativeEdit + "; " + uiaState;
+                    return field != null;
+                }
+                catch { }
             }
-            uiaState += "; Win32 edit retained '" + nativeText + "'";
+            diagnostic = uiaState + "; controls=" + DescribeSaveDialogControls(dialog);
+            return false;
         }
-        else if (nativeEdit != IntPtr.Zero)
-            uiaState += "; SetWindowText failed with error=" + Marshal.GetLastWin32Error();
-        diagnostic = uiaState + "; controls=" + DescribeSaveDialogControls(dialog);
-        return false;
+    }
+
+    private static string ReadSaveDialogFileNameValue(AutomationElement field)
+    {
+        try
+        {
+            var value = field.GetCurrentPattern(ValuePattern.Pattern) as ValuePattern;
+            return value == null ? "<no ValuePattern>" : (value.Current.Value ?? String.Empty);
+        }
+        catch (Exception ex) { return "<read failed: " + ex.GetType().Name + ": " + ex.Message + ">"; }
+    }
+
+    private static bool TryTypeSaveDialogFileName(IntPtr dialog, AutomationElement field, string path, out string diagnostic)
+    {
+        try
+        {
+            SetForegroundWindow(dialog);
+            field.SetFocus();
+            var inputs = new List<NativeInput>
+            {
+                CreateKeyboardInput(0x11, 0, 0),
+                CreateKeyboardInput(0x41, 0, 0),
+                CreateKeyboardInput(0x41, 0, KeyEventKeyUp),
+                CreateKeyboardInput(0x11, 0, KeyEventKeyUp)
+            };
+            foreach (char character in path)
+            {
+                inputs.Add(CreateKeyboardInput(0, character, KeyEventUnicode));
+                inputs.Add(CreateKeyboardInput(0, character, KeyEventUnicode | KeyEventKeyUp));
+            }
+            int inputSize = Marshal.SizeOf(typeof(NativeInput));
+            uint sent = SendInput((uint)inputs.Count, inputs.ToArray(), inputSize);
+            if (sent != inputs.Count)
+                throw new InvalidOperationException("SendInput accepted " + sent + " of " + inputs.Count + " keyboard events; Win32 error=" + Marshal.GetLastWin32Error() + ".");
+            diagnostic = "sent " + path.Length + " Unicode path characters to the focused native field";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            diagnostic = ex.GetType().Name + ": " + ex.Message;
+            return false;
+        }
+    }
+
+    private static NativeInput CreateKeyboardInput(ushort virtualKey, ushort scanCode, uint flags)
+    {
+        return new NativeInput
+        {
+            Type = InputKeyboard,
+            Data = new NativeInputUnion
+            {
+                Keyboard = new NativeKeyboardInput
+                {
+                    VirtualKey = virtualKey,
+                    ScanCode = scanCode,
+                    Flags = flags,
+                    Time = 0,
+                    ExtraInfo = IntPtr.Zero
+                }
+            }
+        };
     }
 
     private static string DescribeSaveDialogControls(IntPtr dialog)
