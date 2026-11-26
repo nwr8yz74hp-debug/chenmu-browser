@@ -508,17 +508,23 @@ internal static class BrowserLogicTests
 
     private static void TestUpdateNoticeVersionIsolation()
     {
-        Assert(UpdateNoticeContent.GetEditionName(new Version(1, 5, 4)) == "v1.5 LTS",
-            "v1.5.4 程序版本以 v1.5 LTS 品牌名展示");
+        Assert(UpdateNoticeContent.GetEditionName(new Version(1, 5, 5)) == "v1.5 LTS",
+            "v1.5.5 程序版本以 v1.5 LTS 品牌名展示");
+        Assert(!UpdateNoticeContent.IsFinalV1Lts(new Version(1, 5, 4)) &&
+            UpdateNoticeContent.GetEditionName(new Version(1, 5, 4)) == "v1.5.4",
+            "历史测试版 v1.5.4 不误标为最终 LTS 版");
         Assert(!UpdateNoticeContent.IsFinalV1Lts(new Version(1, 5, 3)) &&
             UpdateNoticeContent.GetEditionName(new Version(1, 5, 3)) == "v1.5.3",
             "历史 v1.5.3 不误标为最终 LTS 版");
 
-        var ltsNotes = "# CHENMU Browser v1.5.4 更新说明\n- 当前 LTS 修复。\n" +
-            "# CHENMU Browser v1.5.3 更新说明\n- 上一版主页修复。\n";
-        Assert(UpdateNoticeContent.ReadCurrentReleaseNotes(ltsNotes, new Version(1, 5, 4)) == "• 当前 LTS 修复。",
-            "v1.5.4 更新弹窗只读取当前 LTS 区块");
-        Assert(UpdateNoticeContent.ReadCurrentReleaseNotes(ltsNotes, new Version(1, 5, 3)) == "• 上一版主页修复。",
+        var ltsNotes = "# CHENMU Browser v1.5.5 更新说明\n- 当前 Ctrl+F 修复。\n" +
+            "# CHENMU Browser v1.5.4 更新说明\n- 上一版安全修复。\n" +
+            "# CHENMU Browser v1.5.3 更新说明\n- 更早主页修复。\n";
+        Assert(UpdateNoticeContent.ReadCurrentReleaseNotes(ltsNotes, new Version(1, 5, 5)) == "• 当前 Ctrl+F 修复。",
+            "v1.5.5 更新弹窗只读取最终版当前区块");
+        Assert(UpdateNoticeContent.ReadCurrentReleaseNotes(ltsNotes, new Version(1, 5, 4)) == "• 上一版安全修复。",
+            "v1.5.4 更新说明继续作为历史区块可读取");
+        Assert(UpdateNoticeContent.ReadCurrentReleaseNotes(ltsNotes, new Version(1, 5, 3)) == "• 更早主页修复。",
             "v1.5.3 更新说明继续作为历史区块可读取");
 
         var cumulativeNotes = "# CHENMU Browser v1.4.2 更新说明\n" +

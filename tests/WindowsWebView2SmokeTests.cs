@@ -260,14 +260,15 @@ internal static class WindowsWebView2SmokeTests
                     EnumChildWindows(dialog, callback, IntPtr.Zero);
                     var message = String.Join(Environment.NewLine, text);
                     if (message.IndexOf("从第一份 Windows 浏览器程序起步", StringComparison.Ordinal) < 0 ||
-                        message.IndexOf("v1.5 LTS 为 v1 系列郑重收笔", StringComparison.Ordinal) < 0 ||
+                        message.IndexOf("v1.5.5 以“v1.5 LTS”的发行名称，为 v1 系列郑重收笔", StringComparison.Ordinal) < 0 ||
                         message.IndexOf("本次更新实际交付", StringComparison.Ordinal) < 0 ||
                         message.IndexOf(expectedMessage, StringComparison.Ordinal) < 0)
                         throw new InvalidOperationException("The visible branded update story did not contain the verified v1 history and current changelog. Expected: " + expectedMessage + " Actual: " + message);
 
-                    if (currentVersion.Major == 1 && currentVersion.Minor == 5 && currentVersion.Build == 4 &&
-                        message.IndexOf("测试版 · 验证状态请查看本次更新说明与 GitHub 发布页。", StringComparison.Ordinal) < 0)
-                        throw new InvalidOperationException("The v1.5.4 test-release risk notice is missing from the visible branded dialog.");
+                    if (currentVersion.Major == 1 && currentVersion.Minor == 5 && currentVersion.Build == 5 &&
+                        (message.IndexOf("v1 系列的最终稳定版", StringComparison.Ordinal) < 0 ||
+                         message.IndexOf("测试版", StringComparison.Ordinal) >= 0))
+                        throw new InvalidOperationException("The v1.5.5 stable-release notice is missing or still labels the release as a test build.");
 
                     _updateNoticeValidated = true;
                     Console.WriteLine("PASS: visible branded update dialog title, v1 history, v1.5 LTS story and current Chinese changelog.");

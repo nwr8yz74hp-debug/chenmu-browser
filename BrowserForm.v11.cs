@@ -993,7 +993,7 @@ namespace ChenmuBrowser
             };
             var subtitle = new Label
             {
-                Text = isFinalV1 ? "测试版 · 验证状态请查看本次更新说明与 GitHub 发布页。" : "把日常浏览做得更轻、更稳、更顺手。谢谢你一路同行。",
+                Text = isFinalV1 ? "v1 系列最终稳定版 · 以 v1.5 LTS 收尾。" : "把日常浏览做得更轻、更稳、更顺手。谢谢你一路同行。",
                 AutoSize = true,
                 Location = new Point(29, 99),
                 ForeColor = Color.FromArgb(220, 230, 238)
@@ -1026,7 +1026,7 @@ namespace ChenmuBrowser
             var versionLabel = new Label
             {
                 Text = isFinalV1
-                    ? "本次程序版本 v" + noticeVersion.ToString(3) + "   ·   长效版名称 v1.5 LTS"
+                    ? "本次程序版本 v" + noticeVersion.ToString(3) + "   ·   发行名称 v1.5 LTS"
                     : "本次程序版本 v" + noticeVersion.ToString(3),
                 AutoSize = true,
                 Location = new Point(24, 25),
@@ -1063,8 +1063,8 @@ namespace ChenmuBrowser
                 "v1.0 的早期版本添上标签浏览与下载管理，之后不断修整主页、窗口和更新流程。看起来只是几处布局与细节，却让一扇刚刚打开的浏览器窗口，慢慢变成每天都能安心使用的工具。" + Environment.NewLine + Environment.NewLine +
                 "到了 v1.2，浏览器开始照顾更长久的使用习惯：可选的本机会话恢复、兼容 Chrome 与 Edge 的书签导入导出，以及彼此独立的站点例外与省流设置。v1.3 又把 CHENMU Reader 带进工具栏，让常见文档也能留在本机、留在熟悉的窗口里阅读。" + Environment.NewLine + Environment.NewLine +
                 "v1.4 把心思放在边界与可靠性：收紧 Reader 的本地文件访问，加入跨重启的下载记录、可调整的历史保留、逐站点默认拒绝权限、可选的阅读位置恢复与本地壁纸。之后的每次修补，也继续照看窗口恢复、主页重绘与更新说明这些容易被忽略、却影响每天体验的小地方。" + Environment.NewLine + Environment.NewLine +
-                "v1.5 继续补齐常用能力：更可靠的网页历史导航、本地解压扩展管理、页内查找、每标签缩放、最近关闭标签恢复，以及网页 PDF 保存与 PNG 截图。v1.5.1 与 v1.5.2 让离线问候和切回前台后的主页恢复更细致；v1.5.3 进一步修复了切回前台时新标签页偶发白屏。现在，v1.5.4 将这些日常功能与稳定性修复一并收拢，作为 v1 系列最后一版。" + Environment.NewLine + Environment.NewLine +
-                "而现在，v1.5 LTS 为 v1 系列郑重收笔。它不意味着每一步都惊天动地，而是把一路做过的功能、修过的细节和对轻量易用的坚持，一起收拢起来。当前版本仍是测试版，请以实际验证结果为准。谢谢你让这款浏览器有机会从第一版走到这里。后续 v2.0 将作为独立版本线另行规划。";
+                "v1.5 继续补齐常用能力：更可靠的网页历史导航、本地解压扩展管理、页内查找、每标签缩放、最近关闭标签恢复，以及网页 PDF 保存与 PNG 截图。v1.5.1 与 v1.5.2 让离线问候和切回前台后的主页恢复更细致；v1.5.3 进一步修复了切回前台时新标签页偶发白屏。v1.5.4 继续收紧数据边界、书签导入与 Reader 文档处理；v1.5.5 修复 WebView2 原生焦点下 Ctrl+F 偶尔无法打开浏览器查找栏的问题，并以此作为 v1 系列最后一次完善。" + Environment.NewLine + Environment.NewLine +
+                "而现在，v1.5.5 以“v1.5 LTS”的发行名称，为 v1 系列郑重收笔。作为 v1 系列的最终稳定版，它不意味着每一步都惊天动地，而是把一路做过的功能、修过的细节和对轻量易用的坚持，一起收拢起来。谢谢你让这款浏览器有机会从第一版走到这里。v2.0 将作为独立版本线另行规划。";
 
             var notes = String.IsNullOrWhiteSpace(currentReleaseNotes)
                 ? "本次更新说明暂不可用。"

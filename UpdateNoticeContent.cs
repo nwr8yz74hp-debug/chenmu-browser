@@ -57,7 +57,7 @@ namespace ChenmuBrowser
 
         public static bool IsFinalV1Lts(Version version)
         {
-            return version != null && version.Major == 1 && version.Minor == 5 && version.Build == 4;
+            return version != null && version.Major == 1 && version.Minor == 5 && version.Build == 5;
         }
 
         public static string GetEditionName(Version version)

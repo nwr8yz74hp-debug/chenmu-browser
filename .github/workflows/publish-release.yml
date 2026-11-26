@@ -169,6 +169,11 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $installDir 'RELEASE_NOTES.md'))) { throw 'Installed release notes are missing.' }
           Write-Host "Silent upgrade smoke test passed: v1.0.13 -> v$expectedVersion at $actualInstallDir (FileVersion $actualFileVersion)."
 
+      - name: Smoke test verified v1.5.4 to v1.5.5 silent upgrade
+        if: ${{ github.ref == 'refs/tags/v1.5.5' }}
+        shell: pwsh
+        run: .\tests\Verify-UpgradeFromV154.ps1
+
       - name: Set up Python for packaging
         uses: actions/setup-python@v5
         with:
@@ -208,8 +213,10 @@ jobs:
           $releaseTitle = "CHENMU Browser $env:GITHUB_REF_NAME"
           if ($env:GITHUB_REF_NAME -eq 'v1.5.2') { $releaseTitle += '（测试版）' }
           if ($env:GITHUB_REF_NAME -eq 'v1.5.4') { $releaseTitle = 'CHENMU Browser v1.5 LTS（v1.5.4 测试版）' }
+          if ($env:GITHUB_REF_NAME -eq 'v1.5.5') { $releaseTitle = 'CHENMU Browser v1.5 LTS（v1.5.5 稳定版）' }
           $options = @()
           if ($env:GITHUB_REF_NAME -eq 'v1.5.4') { $options += '--latest' }
+          if ($env:GITHUB_REF_NAME -eq 'v1.5.5') { $options += '--latest' }
           gh release create "$env:GITHUB_REF_NAME" `
             "dist/CHENMU-Browser-Setup-x64.exe" `
             "dist/CHENMU-Browser-Windows-x64.zip" `

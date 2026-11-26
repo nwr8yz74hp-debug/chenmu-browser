@@ -103,6 +103,11 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $installDir 'RELEASE_NOTES.md'))) { throw 'Installed release notes are missing.' }
           Write-Host "Silent upgrade smoke test passed: v1.0.13 -> v$expectedVersion at $actualInstallDir (FileVersion $actualFileVersion)."
 
+      - name: Smoke test verified v1.5.4 to v1.5.5 silent upgrade
+        if: ${{ steps.project-version.outputs.version == '1.5.5' }}
+        shell: pwsh
+        run: .\tests\Verify-UpgradeFromV154.ps1
+
       - name: Set up Python for packaging
         uses: actions/setup-python@v5
         with:
