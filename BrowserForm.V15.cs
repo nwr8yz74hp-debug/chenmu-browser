@@ -92,6 +92,37 @@ namespace ChenmuBrowser
             return (GetKeyState(keyCode) & 0x8000) != 0;
         }
 
+        bool IMessageFilter.PreFilterMessage(ref Message m)
+        {
+            if (m.Msg != WmKeyDown || m.WParam.ToInt32() != (int)Keys.F ||
+                !IsKeyDown(0x11) || IsKeyDown(0x10) || IsKeyDown(0x12))
+                return false;
+
+            var tab = _activeTab;
+            var view = tab == null ? null : tab.WebView;
+            if (view == null || view.IsDisposed || !view.ContainsFocus || IsDisposed || Disposing ||
+                !IsHandleCreated)
+                return false;
+
+            var viewHandle = view.Handle;
+            if (m.HWnd != viewHandle && !IsChild(viewHandle, m.HWnd))
+                return false;
+
+            try
+            {
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    if (!IsDisposed && !Disposing && Object.ReferenceEquals(tab, _activeTab))
+                        HandlePageToolShortcut(Keys.Control | Keys.F);
+                });
+                return true;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
         private void AttachWebViewAcceleratorHandler(WebView2 view)
         {
             // WebView2's WinForms wrapper does not expose its controller publicly;
