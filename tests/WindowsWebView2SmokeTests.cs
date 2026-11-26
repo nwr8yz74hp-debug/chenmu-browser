@@ -666,8 +666,26 @@ internal static class WindowsWebView2SmokeTests
         var nativeFocus = GetFocus();
         if (!IsChild(view.Handle, nativeFocus))
             throw new InvalidOperationException("Native keyboard focus was not inside the active WebView before sending " + sequence + ".");
-        SendKeys.SendWait(sequence);
+        if (String.Equals(sequence, "^f", StringComparison.OrdinalIgnoreCase))
+            SendNativeCtrlF();
+        else
+            SendKeys.SendWait(sequence);
         Application.DoEvents();
+    }
+
+    private static void SendNativeCtrlF()
+    {
+        var inputs = new[]
+        {
+            CreateKeyboardInput(0x11, 0, 0),
+            CreateKeyboardInput((ushort)Keys.F, 0, 0),
+            CreateKeyboardInput((ushort)Keys.F, 0, KeyEventKeyUp),
+            CreateKeyboardInput(0x11, 0, KeyEventKeyUp)
+        };
+        int inputSize = Marshal.SizeOf(typeof(NativeInput));
+        uint sent = SendInput((uint)inputs.Length, inputs, inputSize);
+        if (sent != inputs.Length)
+            throw new InvalidOperationException("SendInput accepted " + sent + " of " + inputs.Length + " Ctrl+F keyboard events; Win32 error=" + Marshal.GetLastWin32Error() + ".");
     }
 
     private static async Task SendHistoryShortcutAndWaitAsync(BrowserForm browser, CoreWebView2 core, string sequence, string targetUrl)
