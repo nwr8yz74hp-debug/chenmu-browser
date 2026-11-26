@@ -77,6 +77,9 @@ internal static class WindowsWebView2SmokeTests
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr handle);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumChildWindows(IntPtr parent, EnumChildWindowCallback callback, IntPtr parameter);
@@ -90,6 +93,17 @@ internal static class WindowsWebView2SmokeTests
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern int GetWindowText(IntPtr handle, StringBuilder text, int maximumCount);
+
+    [DllImport("user32.dll")]
+    private static extern int GetDlgCtrlID(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowEnabled(IntPtr handle);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wParam, IntPtr lParam);
@@ -874,7 +888,12 @@ internal static class WindowsWebView2SmokeTests
         Exception automationFailure = null;
         string fileNameDiagnostic = "<not set>";
         AutomationElement fileNameField = null;
-        var deadline = DateTime.UtcNow.AddSeconds(8);
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        string lastFieldDiagnostic = "<no field lookup yet>";
+        int fieldLookupAttempts = 0;
+        string stableFieldIdentity = null;
+        int stableFieldObservations = 0;
+        bool fileNameTyped = false;
         using (var timer = new System.Windows.Forms.Timer { Interval = 100 })
         {
             timer.Tick += delegate
@@ -883,14 +902,43 @@ internal static class WindowsWebView2SmokeTests
                 if (handle != IntPtr.Zero)
                 {
                     dialogSeen = true;
-                    if (fileNameField == null)
+                    if (!fileNameTyped)
                     {
                         string fieldDiagnostic;
-                        if (!TryFindSaveDialogFileNameField(handle, outputPath, out fileNameField, out fieldDiagnostic))
+                        AutomationElement candidateField;
+                        if (!TryFindSaveDialogFileNameField(handle, outputPath, out candidateField, out fieldDiagnostic))
                         {
-                            timer.Stop();
-                            automationFailure = new InvalidOperationException("The save dialog file-name field was not available for '" + title + "': " + fieldDiagnostic);
-                            PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                            fieldLookupAttempts++;
+                            lastFieldDiagnostic = fieldDiagnostic;
+                            fileNameField = null;
+                            stableFieldIdentity = null;
+                            stableFieldObservations = 0;
+                            if (fieldLookupAttempts == 1 || fieldLookupAttempts % 10 == 0)
+                                Console.WriteLine("EXPORT: waiting for save dialog controls (" + fieldLookupAttempts + " attempts): " + fieldDiagnostic);
+                            if (DateTime.UtcNow >= deadline)
+                            {
+                                timer.Stop();
+                                automationFailure = new TimeoutException("The save dialog file-name field did not become available for '" + title + "' after " +
+                                    fieldLookupAttempts + " attempts. Last UIA state: " + lastFieldDiagnostic + "; Win32 controls: " + DescribeNativeSaveDialogControls(handle));
+                                PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                            }
+                            return;
+                        }
+                        var candidate = candidateField.Current;
+                        string candidateIdentity = candidate.NativeWindowHandle + "|" + candidate.ControlType.Id + "|" +
+                            candidate.AutomationId + "|" + candidate.Name;
+                        if (String.Equals(candidateIdentity, stableFieldIdentity, StringComparison.Ordinal))
+                            stableFieldObservations++;
+                        else
+                        {
+                            stableFieldIdentity = candidateIdentity;
+                            stableFieldObservations = 1;
+                        }
+                        fileNameField = candidateField;
+                        lastFieldDiagnostic = fieldDiagnostic;
+                        if (stableFieldObservations < 2)
+                        {
+                            Console.WriteLine("EXPORT: save filename field candidate observed once; waiting for a stable second snapshot: " + fieldDiagnostic);
                             return;
                         }
                         string typingDiagnostic;
@@ -901,7 +949,9 @@ internal static class WindowsWebView2SmokeTests
                             PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
                             return;
                         }
+                        fileNameTyped = true;
                         fileNameDiagnostic = fieldDiagnostic + "; " + typingDiagnostic;
+                        deadline = DateTime.UtcNow.AddSeconds(5);
                         Console.WriteLine("EXPORT: " + fileNameDiagnostic + "; waiting for shell dialog to accept the path.");
                         return;
                     }
@@ -1050,8 +1100,18 @@ internal static class WindowsWebView2SmokeTests
     {
         try
         {
-            SetForegroundWindow(dialog);
+            if (!SetForegroundWindow(dialog) && GetForegroundWindow() != dialog)
+                throw new InvalidOperationException("The save dialog could not be brought to the foreground; foreground=0x" + GetForegroundWindow().ToInt64().ToString("X") + ".");
             field.SetFocus();
+            IntPtr foreground = GetForegroundWindow();
+            IntPtr focus = GetFocus();
+            int nativeFieldHandle = field.Current.NativeWindowHandle;
+            if (foreground != dialog || focus == IntPtr.Zero || (focus != dialog && !IsChild(dialog, focus)))
+                throw new InvalidOperationException("Native focus is not inside the save dialog; foreground=0x" + foreground.ToInt64().ToString("X") +
+                    "; focus=0x" + focus.ToInt64().ToString("X") + "; dialog=0x" + dialog.ToInt64().ToString("X") + ".");
+            if (nativeFieldHandle != 0 && focus != new IntPtr(nativeFieldHandle) && !IsChild(new IntPtr(nativeFieldHandle), focus))
+                throw new InvalidOperationException("Native focus did not land on the filename field; focus=0x" + focus.ToInt64().ToString("X") +
+                    "; field=0x" + new IntPtr(nativeFieldHandle).ToInt64().ToString("X") + ".");
             var inputs = new List<NativeInput>
             {
                 CreateKeyboardInput(0x11, 0, 0),
@@ -1114,6 +1174,37 @@ internal static class WindowsWebView2SmokeTests
         catch (Exception ex)
         {
             return "UIA enumeration failed: " + ex.GetType().Name + ": " + ex.Message;
+        }
+    }
+
+    private static string DescribeNativeSaveDialogControls(IntPtr dialog)
+    {
+        try
+        {
+            var descriptions = new List<string>();
+            Action<IntPtr> describe = delegate(IntPtr handle)
+            {
+                var className = new StringBuilder(128);
+                var text = new StringBuilder(512);
+                GetClassName(handle, className, className.Capacity);
+                GetWindowText(handle, text, text.Capacity);
+                descriptions.Add("hwnd=0x" + handle.ToInt64().ToString("X") + ":class=" + className + ":id=" + GetDlgCtrlID(handle) +
+                    ":text=" + text + ":visible=" + IsWindowVisible(handle) + ":enabled=" + IsWindowEnabled(handle));
+            };
+            describe(dialog);
+            EnumChildWindowCallback callback = delegate(IntPtr child, IntPtr ignored)
+            {
+                if (descriptions.Count >= 80)
+                    return false;
+                describe(child);
+                return descriptions.Count < 80;
+            };
+            EnumChildWindows(dialog, callback, IntPtr.Zero);
+            return String.Join(" | ", descriptions);
+        }
+        catch (Exception ex)
+        {
+            return "Win32 enumeration failed: " + ex.GetType().Name + ": " + ex.Message;
         }
     }
 
