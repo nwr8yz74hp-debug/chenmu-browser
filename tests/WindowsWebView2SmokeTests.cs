@@ -717,12 +717,17 @@ internal static class WindowsWebView2SmokeTests
 
     private static async Task TestV15PageExportsAndCancelAsync(BrowserForm browser, string root)
     {
+        Console.WriteLine("EXPORT: ensuring active WebView2.");
         await EnsureBrowserWebViewAsync(browser);
         var core = GetCoreForTab(GetActiveTab(browser));
+        Console.WriteLine("EXPORT: active WebView2 ready; source=" + core.Source + "; visible=" + browser.Visible + ".");
         string pdfPath = Path.Combine(root, "v15-export-smoke.pdf");
         try
         {
-            bool savedPdf = await core.PrintToPdfAsync(pdfPath, null);
+            Console.WriteLine("EXPORT: starting direct CoreWebView2.PrintToPdfAsync.");
+            bool savedPdf = await AwaitExportOperationAsync(core.PrintToPdfAsync(pdfPath, null), core, browser, pdfPath,
+                "direct CoreWebView2.PrintToPdfAsync");
+            Console.WriteLine("EXPORT: direct PDF completed; saved=" + savedPdf + "; bytes=" + (File.Exists(pdfPath) ? new FileInfo(pdfPath).Length : 0) + ".");
             if (!savedPdf || !File.Exists(pdfPath))
                 throw new InvalidOperationException("WebView2 did not produce a PDF output file.");
             byte[] pdfHeader = File.ReadAllBytes(pdfPath).Take(5).ToArray();
@@ -734,27 +739,71 @@ internal static class WindowsWebView2SmokeTests
         byte[] pngBytes;
         using (var stream = new MemoryStream())
         {
-            await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream);
+            Console.WriteLine("EXPORT: starting direct CoreWebView2.CapturePreviewAsync.");
+            await AwaitExportOperationAsync(core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream), core, browser,
+                Path.Combine(root, "direct-capture.png"), "direct CoreWebView2.CapturePreviewAsync");
             pngBytes = stream.ToArray();
+            Console.WriteLine("EXPORT: direct PNG capture completed; bytes=" + pngBytes.Length + ".");
         }
         if (pngBytes.Length < 8 || pngBytes[0] != 0x89 || pngBytes[1] != 0x50 || pngBytes[2] != 0x4E || pngBytes[3] != 0x47)
             throw new InvalidDataException("WebView2 did not capture the visible page as a valid PNG.");
 
         string uiPdfPath = Path.Combine(root, "v15-ui-export-smoke.pdf");
         string uiPngPath = Path.Combine(root, "v15-ui-capture-smoke.png");
+        Console.WriteLine("EXPORT: starting PDF save-dialog verification.");
         await SaveDialogAndVerifyOutputAsync(browser, "将网页保存为 PDF", "SaveCurrentPageAsPdfAsync", uiPdfPath);
+        Console.WriteLine("EXPORT: PDF save-dialog verification completed.");
         if (!File.Exists(uiPdfPath) || Encoding.ASCII.GetString(File.ReadAllBytes(uiPdfPath).Take(5).ToArray()) != "%PDF-")
             throw new InvalidDataException("Confirming the standard PDF save dialog did not produce a valid PDF file.");
+        Console.WriteLine("EXPORT: starting PNG save-dialog verification.");
         await SaveDialogAndVerifyOutputAsync(browser, "截图当前可见网页", "CaptureCurrentPageAsPngAsync", uiPngPath);
+        Console.WriteLine("EXPORT: PNG save-dialog verification completed.");
         byte[] uiPngBytes = File.ReadAllBytes(uiPngPath);
         if (uiPngBytes.Length < 8 || uiPngBytes[0] != 0x89 || uiPngBytes[1] != 0x50 || uiPngBytes[2] != 0x4E || uiPngBytes[3] != 0x47)
             throw new InvalidDataException("Confirming the standard PNG save dialog did not produce a valid PNG file.");
         try { File.Delete(uiPdfPath); } catch { }
         try { File.Delete(uiPngPath); } catch { }
 
+        Console.WriteLine("EXPORT: starting PNG cancel-dialog verification.");
         await CancelSaveDialogAndVerifyNoSideEffectAsync(browser, "截图当前可见网页", "CaptureCurrentPageAsPngAsync");
+        Console.WriteLine("EXPORT: starting PDF cancel-dialog verification.");
         await CancelSaveDialogAndVerifyNoSideEffectAsync(browser, "将网页保存为 PDF", "SaveCurrentPageAsPdfAsync");
         Console.WriteLine("PASS: standard save dialogs produce visible-page PDF/PNG files; canceling either dialog leaves state unchanged.");
+    }
+
+    private static async Task<T> AwaitExportOperationAsync<T>(Task<T> operation, CoreWebView2 core,
+        BrowserForm browser, string outputPath, string operationName)
+    {
+        var timeout = Task.Delay(TimeSpan.FromSeconds(60));
+        if (await Task.WhenAny(operation, timeout) != operation)
+            throw CreateExportTimeout(core, browser, outputPath, operationName);
+        return await operation;
+    }
+
+    private static async Task AwaitExportOperationAsync(Task operation, CoreWebView2 core,
+        BrowserForm browser, string outputPath, string operationName)
+    {
+        var timeout = Task.Delay(TimeSpan.FromSeconds(60));
+        if (await Task.WhenAny(operation, timeout) != operation)
+            throw CreateExportTimeout(core, browser, outputPath, operationName);
+        await operation;
+    }
+
+    private static TimeoutException CreateExportTimeout(CoreWebView2 core, BrowserForm browser,
+        string outputPath, string operationName)
+    {
+        long outputBytes = 0;
+        try { if (File.Exists(outputPath)) outputBytes = new FileInfo(outputPath).Length; }
+        catch { }
+        string source = "<unavailable>";
+        string title = "<unavailable>";
+        try { source = core.Source ?? "<null>"; }
+        catch { }
+        try { title = core.DocumentTitle ?? "<null>"; }
+        catch { }
+        return new TimeoutException(operationName + " did not complete within 60 seconds. source=" + source +
+            "; title=" + title + "; browserVisible=" + browser.Visible + "; browserContainsFocus=" + browser.ContainsFocus +
+            "; outputExists=" + File.Exists(outputPath) + "; outputBytes=" + outputBytes + ".");
     }
 
     private static async Task SaveDialogAndVerifyOutputAsync(BrowserForm browser, string title, string methodName, string outputPath)
