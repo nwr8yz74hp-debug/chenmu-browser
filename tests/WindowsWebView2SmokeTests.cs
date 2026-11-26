@@ -14,6 +14,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
+using System.Windows.Automation;
 using System.Windows.Forms;
 using ChenmuBrowser;
 using Microsoft.Web.WebView2.Core;
@@ -832,22 +833,14 @@ internal static class WindowsWebView2SmokeTests
                 {
                     dialogSeen = true;
                     timer.Stop();
-                    var fileNameEdit = FindSaveDialogFileNameEdit(handle);
-                    if (fileNameEdit == IntPtr.Zero || !SetWindowText(fileNameEdit, outputPath))
+                    string fileNameDiagnostic;
+                    if (!TrySetSaveDialogFileName(handle, outputPath, out fileNameDiagnostic))
                     {
-                        automationFailure = new InvalidOperationException("The save dialog file-name field was not available for '" + title + "'.");
+                        automationFailure = new InvalidOperationException("The save dialog file-name field was not available for '" + title + "': " + fileNameDiagnostic);
                         PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
                         return;
                     }
-                    var enteredPath = new StringBuilder(4096);
-                    GetWindowText(fileNameEdit, enteredPath, enteredPath.Capacity);
-                    if (!String.Equals(enteredPath.ToString(), outputPath, StringComparison.OrdinalIgnoreCase))
-                    {
-                        automationFailure = new InvalidOperationException("The save dialog did not retain the requested path for '" + title + "'.");
-                        PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
-                        return;
-                    }
-                    Console.WriteLine("EXPORT: save dialog filename set; posting asynchronous OK for " + title + ".");
+                    Console.WriteLine("EXPORT: save dialog filename set (" + fileNameDiagnostic + "); posting asynchronous OK for " + title + ".");
                     if (!PostMessage(handle, 0x0111, new IntPtr(1), IntPtr.Zero))
                     {
                         automationFailure = new InvalidOperationException("Could not post the save command for '" + title + "'.");
@@ -881,6 +874,74 @@ internal static class WindowsWebView2SmokeTests
         var status = (Label)statusField.GetValue(browser);
         if (!File.Exists(outputPath) || !status.Text.Contains(Path.GetFileName(outputPath)))
             throw new InvalidOperationException("Confirming '" + title + "' did not save the requested file and update browser status.");
+    }
+
+    private static bool TrySetSaveDialogFileName(IntPtr dialog, string outputPath, out string diagnostic)
+    {
+        string nativeState = "native edit control was not found";
+        var nativeEdit = FindSaveDialogFileNameEdit(dialog);
+        if (nativeEdit != IntPtr.Zero)
+        {
+            if (SetWindowText(nativeEdit, outputPath))
+            {
+                var nativeText = new StringBuilder(4096);
+                GetWindowText(nativeEdit, nativeText, nativeText.Capacity);
+                if (String.Equals(nativeText.ToString(), outputPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    diagnostic = "Win32 edit control";
+                    return true;
+                }
+                nativeState = "Win32 edit control retained '" + nativeText + "'";
+            }
+            else
+                nativeState = "SetWindowText failed; error=" + Marshal.GetLastWin32Error();
+        }
+
+        try
+        {
+            var root = AutomationElement.FromHandle(dialog);
+            var editCondition = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit);
+            var field = root.FindFirst(TreeScope.Descendants, editCondition);
+            if (field == null)
+                field = root.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox));
+            if (field == null)
+                throw new InvalidOperationException("UI Automation found no Edit or ComboBox descendant.");
+            var value = field.GetCurrentPattern(ValuePattern.Pattern) as ValuePattern;
+            if (value == null)
+                throw new InvalidOperationException("The UI Automation file-name control has no ValuePattern.");
+            value.SetValue(outputPath);
+            string enteredPath = value.Current.Value ?? String.Empty;
+            if (!String.Equals(enteredPath, outputPath, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("UI Automation retained '" + enteredPath + "' instead of the requested path.");
+            diagnostic = "UI Automation " + field.Current.ControlType.ProgrammaticName + " '" + field.Current.Name + "' (" + nativeState + ")";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            diagnostic = nativeState + "; UI Automation failed: " + ex.GetType().Name + ": " + ex.Message + "; controls=" + DescribeSaveDialogControls(dialog);
+            return false;
+        }
+    }
+
+    private static string DescribeSaveDialogControls(IntPtr dialog)
+    {
+        try
+        {
+            var root = AutomationElement.FromHandle(dialog);
+            var controls = root.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+            var descriptions = new List<string>();
+            for (int i = 0; i < controls.Count && i < 40; i++)
+            {
+                var item = controls[i].Current;
+                descriptions.Add(item.ControlType.ProgrammaticName + ":" + item.Name + ":" + item.AutomationId);
+            }
+            return String.Join(" | ", descriptions);
+        }
+        catch (Exception ex)
+        {
+            return "UIA enumeration failed: " + ex.GetType().Name + ": " + ex.Message;
+        }
     }
 
     private static IntPtr FindSaveDialogFileNameEdit(IntPtr dialog)

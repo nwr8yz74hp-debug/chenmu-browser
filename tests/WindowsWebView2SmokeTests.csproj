@@ -15,6 +15,8 @@
     <Compile Remove="BrowserLogicTests.cs" />
     <Compile Remove="HomeVisualSmokeTests.cs" />
     <ProjectReference Include="../CHENMU-Browser.csproj" />
+    <Reference Include="UIAutomationClient" />
+    <Reference Include="UIAutomationTypes" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
   </ItemGroup>
