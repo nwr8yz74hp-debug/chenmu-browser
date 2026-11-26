@@ -840,12 +840,14 @@ internal static class WindowsWebView2SmokeTests
                         PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
                         return;
                     }
-                    Console.WriteLine("EXPORT: save dialog filename set (" + fileNameDiagnostic + "); posting asynchronous OK for " + title + ".");
-                    if (!PostMessage(handle, 0x0111, new IntPtr(1), IntPtr.Zero))
+                    string saveButtonDiagnostic;
+                    if (!TryInvokeSaveDialogButton(handle, out saveButtonDiagnostic))
                     {
-                        automationFailure = new InvalidOperationException("Could not post the save command for '" + title + "'.");
+                        automationFailure = new InvalidOperationException("Could not invoke the save command for '" + title + "': " + saveButtonDiagnostic);
                         PostMessage(handle, 0x0111, new IntPtr(2), IntPtr.Zero);
+                        return;
                     }
+                    Console.WriteLine("EXPORT: save dialog filename set (" + fileNameDiagnostic + "); " + saveButtonDiagnostic + ".");
                 }
                 else if (DateTime.UtcNow >= deadline)
                 {
@@ -941,6 +943,46 @@ internal static class WindowsWebView2SmokeTests
         catch (Exception ex)
         {
             return "UIA enumeration failed: " + ex.GetType().Name + ": " + ex.Message;
+        }
+    }
+
+    private static bool TryInvokeSaveDialogButton(IntPtr dialog, out string diagnostic)
+    {
+        try
+        {
+            var root = AutomationElement.FromHandle(dialog);
+            var condition = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button);
+            var buttons = root.FindAll(TreeScope.Descendants, condition);
+            var names = new List<string>();
+            for (int i = 0; i < buttons.Count; i++)
+            {
+                var button = buttons[i];
+                string name = button.Current.Name ?? String.Empty;
+                names.Add(name);
+                bool isSave = name.IndexOf("Save", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    name.IndexOf("保存", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    name.IndexOf("儲存", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    name.IndexOf("Speichern", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    name.IndexOf("Enregistrer", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    name.IndexOf("Salvar", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    name.IndexOf("Guardar", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    name.IndexOf("저장", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!isSave)
+                    continue;
+                var invoke = button.GetCurrentPattern(InvokePattern.Pattern) as InvokePattern;
+                if (invoke == null)
+                    continue;
+                invoke.Invoke();
+                diagnostic = "UI Automation invoked save button '" + name + "'";
+                return true;
+            }
+            diagnostic = "no enabled save button with InvokePattern; button names=" + String.Join(" | ", names);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            diagnostic = "UI Automation button invocation failed: " + ex.GetType().Name + ": " + ex.Message;
+            return false;
         }
     }
 
